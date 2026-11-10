@@ -1,0 +1,71 @@
+{
+  "name": "dsh-personal-secretary",
+  "version": "0.5.0",
+  "type": "module",
+  "description": "任务管家（Task Butler）：DeepSeek Harness 的任务队列与执行看板插件。批量发布任务、按全局并发自动领取执行、串联接力、DSH 会话自动归档、AI 日报总结、Webhook 通知、定时复盘与经验/技能沉淀。",
+  "icon": "icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "host",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "LICENSE",
+    "README.md",
+    "docs",
+    "tests"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  },
+  "license": "MIT",
+  "author": {
+    "name": "yan92626",
+    "url": "https://github.com/yan92626"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yan92626/dsh-task-butler.git"
+  },
+  "homepage": "https://github.com/yan92626/dsh-task-butler#readme",
+  "bugs": {
+    "url": "https://github.com/yan92626/dsh-task-butler/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "task-queue",
+    "task-board",
+    "agent",
+    "automation",
+    "webhook"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node tests/static-check.mjs && node --test tests/evolution-unit.mjs",
+    "test:static": "node tests/static-check.mjs",
+    "test:unit": "node --test tests/evolution-unit.mjs",
+    "test:api": "python3 tests/api-check.py --base http://127.0.0.1:49224"
+  }
+}

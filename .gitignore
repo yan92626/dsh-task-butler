@@ -1,0 +1,20 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# local data / logs
+*.log
+.personal-secretary/
+.DS_Store
+Thumbs.db
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# editors
+.idea/
+.vscode/
+*.swp
