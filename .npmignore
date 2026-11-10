@@ -1,0 +1,8 @@
+# local artifacts that must never ship in the npm tarball
+__pycache__/
+*.py[cod]
+*.tgz
+*.log
+.DS_Store
+.github/
+docs/preview/*.psd
