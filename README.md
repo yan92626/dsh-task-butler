@@ -49,21 +49,25 @@
 
 ## 界面预览
 
-以下截图是 v0.7 的真实渲染：本地 harness 挂载仓库里的 `client.js` + 真实 DSH 主题 token，数据来自运行中 Host 的只读 `/state`；为了让三块都可见，部分空状态（等你处理 / 进行中）与「今天建议」使用演示数据补足，其余为真实只读数据。
+以下截图是 v0.7.1 的真实渲染：本地 harness 挂载仓库里的 `client.js` + 真实 DSH 主题 token，数据来自运行中 Host 的只读 `/state`（部分空状态与「今天建议」用演示数据补足，见 `docs/preview/v07/`）。
 
-**今日页**：只有三块——今日简报（含「今天建议」一键加入队列）、等你处理、进行中，加一行页脚。
+**今日页**：只有三块——今日简报（含「今天建议」一键加入队列）、等你处理、进行中，加一行页脚；内容列按视图居中（宽屏左右留白对称、与 header 对齐）。
 
-![今日页](docs/preview/v07/today-1280.png)
+![今日页（深色）](docs/preview/v07/today-1638-dark-v071.png)
 
-**任务页**：一行状态条（想法 / 队列 / 进行中 / 已结束 + 自动执行 + 全局搜索）替代 5 张 KPI 卡，列内搜索框移除、漏斗筛选保留。
+**深色主题改版对照**（用户真实截图 → v0.7.0 → v0.7.1）：内容列从左侧对齐改为居中，深色顶部光晕 chroma −52%、卡片与背景亮度差 +70%、正文对比度 15:1。
 
-![任务页](docs/preview/v07/tasks-1280.png)
+![深色主题 before/after](docs/preview/v07/compare-dark-1638-user-v07-v071.png)
+
+**任务页**：一行状态条（想法 / 队列 / 进行中 / 已结束 + 自动执行 + 全局搜索）替代 5 张 KPI 卡，列内搜索框移除、漏斗筛选保留；1280 宽下为真正的四列。
+
+![任务页（深色）](docs/preview/v07/tasks-1280-dark-v071.png)
 
 **回顾抽屉**：日志 / 复盘 / 经验 / 技能四个 tab 合并到一个抽屉，页头不再有独立的「日报」「复盘」按钮。
 
 ![回顾抽屉](docs/preview/v07/review-journal-1280.png)
 
-其余对照与状态（v0.6 → v0.7）：`docs/preview/v07/` 下的 `today-before-1280.png` / `tasks-before-1280.png`（v0.6 旧版今日工作台与看板）、`today-1280-dark.png` / `tasks-1280-dark.png`（暗色）、`today-900.png` / `tasks-800.png`（窄屏）。
+其余对照与状态：`docs/preview/v07/` 下的 `today-before-1280.png` / `tasks-before-1280.png`（v0.6 旧版今日工作台与看板）、`today-1638-dark-rich-v071.png`（三块全在的深色态）、`today-1280-light-v071.png`（浅色）、`today-before-1280-dark.png`（v0.6 深色）等。UI 改动必须按 [`docs/visual-qa.md`](docs/visual-qa.md) 做多宽度 × 明暗 × 空/非空态验收，截图随提交入库。
 
 设计稿：`docs/design/today-mockup.html`（v0.6 的高保真设计稿；v0.7 已按「三块」进一步精简，以真实渲染图为准）。
 
@@ -90,7 +94,7 @@
 2. 选择「安装 Bundle / 安装插件」，粘贴本仓库地址（推荐锁定版本）：
 
    ```
-   github:yan92626/dsh-task-butler#v0.7.0
+   github:yan92626/dsh-task-butler#v0.7.1
    ```
 
    不锁定版本可写 `github:yan92626/dsh-task-butler`。
@@ -253,6 +257,7 @@ python3 tests/api-check.py --base http://127.0.0.1:<harness-port>
 
 - 技术栈：纯 Node.js（ESM，无构建步骤）+ 单文件浏览器端 `client.js`（`window.__ModuleLoader__` 模块格式，无 JSX）。
 - 提交 PR 前请确保 `node tests/static-check.mjs` 与上述单测通过；CI 会在 Node 20/22 上跑同样的检查。
+- **UI 改动必须按 [`docs/visual-qa.md`](docs/visual-qa.md) 做视觉验收**：多宽度 × 明暗主题 × 空/非空态截图，检查留白对称、对齐、对比度、字号、横向溢出与 console error；截图随提交放入 `docs/preview/`，不通过不提交、不发版。
 
 ## 贡献与许可
 

@@ -20,10 +20,11 @@ never triggers a retrospective, so it does not spend model time or change your s
 --briefs adds a v0.6+ section that reads `/briefs` and, only when today's brief does
 not exist yet, POSTs `/briefs/generate` (a real model session, up to a few minutes).
 The generated file is deleted in the cleanup pass. On an older Host (0.5.x) every
-v0.6 check is skipped with a notice instead of failing; on a 0.6 Host the v0.7
-version/new-field assertions are skipped with a note (the Host simply was not
-reloaded yet). v0.7 also checks that `settings.morningBrief.lastSuggestions` is a
-list capped at 3 with the documented item shape (never specific profile values).
+v0.6 check is skipped with a notice instead of failing; on a 0.6.x / 0.7.0 Host
+the exact version assertion is skipped with a note (the Host simply was not
+reloaded yet) while the rest of the suite still runs. On v0.7+ it also checks that
+`settings.morningBrief.lastSuggestions` is a list capped at 3 with the documented
+item shape (never specific profile values).
 
 Cleanup limitation: the Host's morning-brief run bookkeeping (lastDate/lastStatus)
 has no public API to restore, so after `--briefs` the profile correctly records
@@ -265,16 +266,17 @@ def main():
         version = str(payload.get("version") or "")
         check("plugin version readable", status == 200 and bool(version), payload)
         is_v07 = version.startswith("0.7")
-        # v0.7 replaced v0.6; an old 0.6 Host is a "not reloaded yet" state, not a
-        # regression, so the version/new-field assertions are skipped with a note.
+        # v0.7.1 is a visual-fix release: a running 0.6.x or 0.7.0 bundle simply
+        # predates the release and is a "not reloaded yet" state, not a
+        # regression, so the exact-version assertion is skipped with a note.
         is_v06_plus = version.startswith(("0.6", "0.7"))
-        if is_v07:
-            check("version is 0.7.0", version == "0.7.0", version)
-        elif version.startswith("0.6"):
-            print(f"     当前 live Host 版本 {version}（尚未热加载 v0.7）；"
-                  "按约定跳过 0.7 版本与新字段断言，以单测/静态为准。")
+        if version.startswith("0.7.1"):
+            check("version is 0.7.1", version == "0.7.1", version)
+        elif version.startswith("0.6") or version.startswith("0.7"):
+            print(f"     当前 live Host 版本 {version}（bundle 尚未重载到 v0.7.1）；"
+                  "按约定跳过精确版本断言，其余检查照跑，以单测/静态为准。")
         else:
-            check("version is 0.7.0", False, version)
+            check("version is 0.7.1", False, version)
         status, payload = request(base, "POST", "/secretary/api/settings", {"concurrency": 1},
                                   origin="https://evil.example")
         check("cross-origin POST is rejected", status == 403, (status, payload))

@@ -8,7 +8,7 @@
 import { HttpError, PRIORITY_LABELS, normalizePriority } from './store.js'
 
 const PREFIX = '/secretary/api'
-const VERSION = '0.7.0'
+const VERSION = '0.7.1'
 const MAX_BODY_BYTES = 1_000_000
 const VALID_ACTIONS = new Set([
   'cancel',

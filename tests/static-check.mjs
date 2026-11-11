@@ -171,14 +171,14 @@ for (const route of ["'/evolution'", "'/evolution/content'", "'/evolution/skills
   "'/evolution/lessons/delete'", "'/evolution/skills/action'"]) {
   check(`api route ${route}`, apiSource.includes(route))
 }
-check('api version is 0.7.0', /VERSION = '0\.7\.0'/.test(apiSource))
+check('api version is 0.7.1', /VERSION = '0\.7\.1'/.test(apiSource))
 check('state carries the evolution meta', apiSource.includes('getEvolutionMeta()'))
 check('state carries the briefs meta', /briefs\s*:\s*[^\n]{0,80}meta\s*\(\s*\)/.test(apiSource))
 const toolSource = read('host/tool.js')
 check('agent tool supports retrospective and evolution', toolSource.includes("'retrospective'") &&
   toolSource.includes("'evolution'"))
 check('webhook has a retrospective template', read('host/webhook.js').includes('retrospectiveMarkdown'))
-check('package version is 0.7.0', pkg.version === '0.7.0', pkg.version)
+check('package version is 0.7.1', pkg.version === '0.7.1', pkg.version)
 check('client has the merged review entry', client.includes('回顾') && client.includes('/evolution'))
 check('client has the self-evolution settings section', client.includes('evolutionSection') &&
   client.includes('skillMode'))
@@ -299,6 +299,16 @@ check('client removed the standalone report/retrospective header buttons',
 check('client keeps a global task search', client.includes('搜索') && !client.includes('搜索本列'))
 check('client moves auto-run into the task page status strip',
   client.includes('自动执行') && !client.includes('执行中 pill'))
+
+// v0.7.1 visual fix: the page carries a view data attribute so the inner column
+// can be centered per view, and the dark-theme contrast work rides on the real
+// DSH body attribute instead of a second palette.
+check('v0.7.1 centers the page per view and uses the DSH dark-theme hook',
+  client.includes("'data-view': view") &&
+  client.includes('.dsh-ps-page[data-view="today"] .dsh-ps-page-inner') &&
+  client.includes('.dsh-ps-page[data-view="tasks"] .dsh-ps-page-inner') &&
+  client.includes('margin-inline:auto') &&
+  client.includes('body[data-ds-dark-theme] .dsh-ps-panel'))
 
 console.log()
 if (failures.length) {
