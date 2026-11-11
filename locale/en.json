@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Task Butler",
-    "description": "An AI task secretary for tasks, sessions and self-evolution: the Today workbench answers \"what to do today / what needs me\" first, with one-line quick capture; the queue auto-claims and runs tasks under a global concurrency limit, and priority now affects queue insertion; a morning brief is generated at 08:30 and pushed to your webhook, followed by a scheduled daily report; new DSH workspace sessions fold in; tasks can be edited, paused, resumed or stopped; scheduled retrospectives turn failures and your corrections into reusable lessons that are archived for review, and fold repeated workflows into DSH skills."
+    "description": "An AI work secretary for tasks, sessions and self-evolution: the daily work log, morning brief and retrospective read the real task results and DSH session content and produce concrete findings and next steps instead of status counts; the Today page keeps only three blocks (today's brief / needs you / in progress) with one-line quick capture; the queue auto-claims and runs tasks under a global concurrency limit, and priority affects queue insertion; the 08:30 morning brief offers one-click suggestions and a scheduled work log follows; new DSH workspace sessions fold in; scheduled retrospectives turn failures and your corrections into reusable lessons and DSH skills; webhook notifications included."
   }
 }

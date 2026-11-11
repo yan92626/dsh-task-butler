@@ -38,6 +38,12 @@ export const DEFAULT_REPORT_TIME = '21:00'
 // v0.6 adds the morning brief schedule additively: an older document simply
 // loads with the default 08:30 schedule and no run state.
 export const DEFAULT_BRIEF_TIME = '08:30'
+// v0.7: the morning brief carries up to three structured, one-click task
+// suggestions produced by the model (persisted as `lastSuggestions`).
+export const MAX_BRIEF_SUGGESTIONS = 3
+const MAX_SUGGESTION_TITLE = 60
+const MAX_SUGGESTION_REASON = 80
+const MAX_SUGGESTION_PROMPT = 500
 export const REPORT_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/
 export const REPORT_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 export const TASK_STATUSES = ['idea', 'pending', 'running', 'paused', 'blocked', 'done', 'failed', 'cancelled']
@@ -294,6 +300,36 @@ export function normalizePriority(value) {
   return text
 }
 
+/**
+ * Shared validation for one structured morning-brief suggestion (v0.7).
+ *
+ * The model returns `{title, reason, prompt, priority}` items that the UI can
+ * turn into a queued task with one click. Invalid items are dropped, text is
+ * clipped and an unknown priority falls back to `normal`.
+ */
+export function normalizeSuggestion(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const title = typeof raw.title === 'string' ? raw.title.trim().slice(0, MAX_SUGGESTION_TITLE) : ''
+  if (!title) return null
+  const reason = typeof raw.reason === 'string' ? raw.reason.trim().slice(0, MAX_SUGGESTION_REASON) : ''
+  const prompt = typeof raw.prompt === 'string' ? raw.prompt.trim().slice(0, MAX_SUGGESTION_PROMPT) : ''
+  const priority = TASK_PRIORITIES.includes(raw.priority) ? raw.priority : DEFAULT_PRIORITY
+  return { title, reason, prompt: prompt || title, priority }
+}
+
+/** Normalise a suggestion list: keep valid entries, cap at MAX_BRIEF_SUGGESTIONS. */
+export function normalizeSuggestions(raw) {
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const item of raw) {
+    const suggestion = normalizeSuggestion(item)
+    if (!suggestion) continue
+    out.push(suggestion)
+    if (out.length >= MAX_BRIEF_SUGGESTIONS) break
+  }
+  return out
+}
+
 // v0.6: the priority rank drives the *insertion position* of a pending task.
 // The user can still override the resulting order manually by dragging a card
 // or by using "run next", which move the row and are never re-sorted.
@@ -428,6 +464,7 @@ export function defaultMorningBrief(stateDir = resolveDataDir()) {
     lastError: null,
     lastGeneratedAt: null,
     generatingDate: null,
+    lastSuggestions: [],
   }
 }
 
@@ -461,6 +498,8 @@ export function normalizeMorningBrief(raw, stateDir = resolveDataDir(), previous
   next.generatingDate = typeof generatingDate === 'string' && REPORT_DATE_PATTERN.test(generatingDate)
     ? generatingDate
     : null
+  const lastSuggestions = source.lastSuggestions === undefined ? base.lastSuggestions : source.lastSuggestions
+  next.lastSuggestions = normalizeSuggestions(lastSuggestions)
   return next
 }
 
@@ -1321,6 +1360,10 @@ export class TaskStore {
         next.generatingDate = typeof patch.generatingDate === 'string' && REPORT_DATE_PATTERN.test(patch.generatingDate)
           ? patch.generatingDate
           : null
+      }
+      // v0.7: structured suggestions produced by the morning-brief model.
+      if ('lastSuggestions' in patch) {
+        next.lastSuggestions = normalizeSuggestions(patch.lastSuggestions)
       }
     }
     this.state.settings = { ...this.state.settings, morningBrief: next }

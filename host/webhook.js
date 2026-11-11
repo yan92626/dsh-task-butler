@@ -137,22 +137,38 @@ export function testMarkdown() {
 }
 
 const MORNING_BRIEF_EXCERPT = 600
+const MORNING_BRIEF_SUGGESTIONS = 3
+
+function morningBriefSuggestionLines(payload) {
+  const suggestions = Array.isArray(payload && payload.suggestions) ? payload.suggestions : []
+  const lines = []
+  for (const item of suggestions.slice(0, MORNING_BRIEF_SUGGESTIONS)) {
+    if (!item || typeof item !== 'object') continue
+    const title = typeof item.title === 'string' ? item.title.trim() : ''
+    if (!title) continue
+    const reason = typeof item.reason === 'string' ? item.reason.trim() : ''
+    lines.push(`• ${title}${reason ? ` — ${reason}` : ''}`)
+  }
+  return lines
+}
 
 /**
- * v0.6 morning brief notification: the fixed title, the brief excerpt (the
- * first paragraphs, capped) and the file path. Platform flattening applies to
- * this Markdown automatically through `renderMarkdown`.
+ * v0.7 morning brief notification: the fixed title, the structured "今天建议"
+ * list (title — reason), the brief excerpt (capped) and the file path. Platform
+ * flattening applies to this Markdown automatically through `renderMarkdown`.
  */
 export function morningBriefMarkdown(payload) {
   const date = payload && payload.date ? String(payload.date) : ''
   const content = payload && typeof payload.content === 'string' ? payload.content.trim() : ''
   const path = payload && payload.path ? String(payload.path) : ''
+  const suggestionLines = morningBriefSuggestionLines(payload)
   const excerpt = content.length > MORNING_BRIEF_EXCERPT
     ? `${content.slice(0, MORNING_BRIEF_EXCERPT)}…`
     : content
   return [
     `## 🌅 晨间简报 · ${date}`,
     '',
+    ...(suggestionLines.length > 0 ? ['**今天建议：**', ...suggestionLines, ''] : []),
     excerpt || (date ? `_（${date} 晨间简报内容为空）_` : '_（晨间简报内容为空）_'),
     '',
     ...(path ? [`> 文件：${path}`] : []),

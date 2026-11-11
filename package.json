@@ -1,8 +1,8 @@
 {
   "name": "dsh-personal-secretary",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "type": "module",
-  "description": "任务管家（Task Butler）：DeepSeek Harness 的 AI 任务秘书插件。今日工作台回答「今天做什么 / 什么需要我」，一句话快捷捕获，任务队列按全局并发自动领取执行、优先级参与入队排序；08:30 晨间简报 + AI 日报 + Webhook 通知，定时复盘与经验/技能沉淀。",
+  "description": "任务管家（Task Butler）：DeepSeek Harness 的 AI 工作日志与任务秘书插件。工作日志/晨间简报/复盘会读取你的真实任务与 DSH 会话内容，给出具体结论与建议，而不是状态计数；今日页只保留 3 块（今日简报 / 等你处理 / 进行中），一句话快捷捕获；任务队列按全局并发自动领取执行、优先级参与入队排序；Webhook 通知与经验/技能沉淀。",
   "icon": "icon.svg",
   "exports": {
     ".": "./index.js",
@@ -65,9 +65,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node tests/static-check.mjs && node --test tests/evolution-unit.mjs tests/briefs-unit.mjs",
+    "test": "node tests/static-check.mjs && node --test tests/logs-unit.mjs tests/briefs-unit.mjs tests/evolution-unit.mjs",
     "test:static": "node tests/static-check.mjs",
-    "test:unit": "node --test tests/evolution-unit.mjs tests/briefs-unit.mjs",
+    "test:unit": "node --test tests/logs-unit.mjs tests/briefs-unit.mjs tests/evolution-unit.mjs",
     "test:api": "python3 tests/api-check.py --base http://127.0.0.1:49224"
   }
 }

@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 /**
- * Host-half unit tests for v0.6: the morning-brief engine and the scheduled
- * priority order.
+ * Host-half unit tests for the morning-brief engine and the scheduled priority
+ * order: v0.6 engine surface + v0.7 journal/session context, structured
+ * suggestions and the new four-section brief.
  *
  * These tests run without a live Harness: they import the Host modules, drive
  * the pure helpers, and exercise TaskStore against a temporary state directory
- * (same pattern as tests/evolution-unit.mjs). The contract is
- * docs/v0.6-contract.md §2.1, §2.2, §3.1, §3.3 and §5.1.
+ * (same pattern as tests/evolution-unit.mjs). Contracts:
+ * docs/v0.6-contract.md §2.1, §2.2, §3.1, §3.3, §5.1 and
+ * docs/v0.7-contract.md §3, §6.1.
  *
  * Run: node --test tests/briefs-unit.mjs
  */
@@ -20,18 +22,20 @@ import * as briefs from '../host/briefs.js'
 import { localDateString } from '../host/reports.js'
 import {
   HttpError,
+  MAX_BRIEF_SUGGESTIONS,
   STATE_VERSION,
   TaskStore,
   WEBHOOK_EVENTS,
   defaultMorningBrief,
   normalizeMorningBrief,
+  normalizeSuggestions,
   pendingInsertIndex,
 } from '../host/store.js'
 import { pendingInClaimOrder, selectSessionResultBackfill } from '../host/scheduler.js'
 import { morningBriefMarkdown, renderMarkdown } from '../host/webhook.js'
 
 const ROOT = '/repo'
-const BRIEF_HEADINGS = ['## 一、昨日回顾', '## 二、今日焦点', '## 三、等你处理', '## 四、风险与提醒']
+const BRIEF_HEADINGS = ['## 一、昨天发生了什么', '## 二、今天建议先做', '## 三、等你处理', '## 四、提醒']
 
 function at(dateText, hours, minutes) {
   const [year, month, day] = dateText.split('-').map(Number)
@@ -123,19 +127,31 @@ function sampleData(overrides = {}) {
     ],
     ideas: [{ id: 'i1', title: '研究通知中心', status: 'idea', priority: 'normal' }],
     skills: 2,
+    reportText: '# 2026-11-10 工作日志\n\n## 一、今日要点\n\n- 昨天完成了缓存修复。',
+    sessionDigests: [
+      {
+        id: 'sg1',
+        title: '调试构建缓存',
+        ask: 'CI 的缓存为什么一直失效？',
+        answer: '发现 lockfile 变更没有提交，补上后缓存命中正常。',
+      },
+    ],
     ...overrides,
   }
 }
 
-test('buildMorningBriefFallback: fixed four sections, order stable, empty data readable', () => {
+test('buildMorningBriefFallback: new four sections, order stable, empty data readable', () => {
   const content = briefs.buildMorningBriefFallback(sampleData())
   assert.ok(content.startsWith('# 2026-11-11 晨间简报'), content.slice(0, 120))
   assertHeadings(content)
-  assert.ok(content.includes('修复登录流程'))
   assert.ok(content.includes('补测试'))
   assert.ok(content.includes('等你确认发布方案'))
-  // A running task past two hours is a risk item, not a focus item.
-  assert.ok(content.includes('迁移设置页'))
+  // Yesterday's journal text and the real session ask/answer feed the brief.
+  assert.ok(content.includes('昨天完成了缓存修复'), content)
+  assert.ok(content.includes('CI 的缓存为什么一直失效？') || content.includes('lockfile'), content)
+  // Reminders carry the skill-candidate count (the schedule node only fits when
+  // the reminder block has room; an empty brief proves that path below).
+  assert.ok(content.includes('技能候选'), content)
   assert.ok(!/undefined|NaN|\[object Object\]/.test(content))
   assert.ok(!content.includes('```'))
 
@@ -147,21 +163,29 @@ test('buildMorningBriefFallback: fixed four sections, order stable, empty data r
     candidates: [],
     ideas: [],
     skills: 0,
+    reportText: '',
+    sessionDigests: [],
   })
   assert.ok(empty.startsWith('# 2026-11-11 晨间简报'))
   assertHeadings(empty)
   assert.ok(empty.trim().split('\n').length >= 8, empty)
+  assert.ok(empty.includes('定时节点'), empty)
   assert.ok(!/undefined|NaN|\[object Object\]/.test(empty))
 })
 
-test('buildMorningBriefPrompt: four sections, data references, no technical detail', () => {
+test('buildMorningBriefPrompt: new four sections, journal/session data, no technical detail', () => {
   const prompt = briefs.buildMorningBriefPrompt(sampleData())
   assert.ok(prompt.includes('# 2026-11-11 晨间简报'))
   assertHeadings(prompt)
   for (const text of ['修复登录流程', '补测试', '等你确认发布方案', '研究通知中心']) {
     assert.ok(prompt.includes(text), `prompt misses ${text}`)
   }
-  assert.ok(/40\s*字/.test(prompt), 'prompt must cap each item at 40 characters')
+  // Yesterday's journal text and session digest are part of the request.
+  assert.ok(prompt.includes('昨天完成了缓存修复'), prompt.slice(0, 600))
+  assert.ok(prompt.includes('CI 的缓存为什么一直失效？') || prompt.includes('lockfile'))
+  // Suggestions marker, length window and bans.
+  assert.ok(prompt.includes('SUGGESTIONS_JSON'))
+  assert.ok(/400\s*[–-]\s*700/.test(prompt), 'brief length window')
   assert.ok(/token/i.test(prompt), 'prompt must forbid token/technical detail')
   assert.ok(/代码块/.test(prompt), 'prompt must forbid code fences')
 })
@@ -345,7 +369,7 @@ test('collectMorningBriefData: yesterday, running, waiting, candidates, ideas, s
 
 test('extractBriefBody: forces the title and exactly one trailing newline', () => {
   assert.equal(briefs.extractBriefBody('just text', '2026-11-11'), '# 2026-11-11 晨间简报\n\njust text\n')
-  const titled = briefs.extractBriefBody('# 2026-11-11 晨间简报\n\n## 一、昨日回顾\n\n无', '2026-11-11')
+  const titled = briefs.extractBriefBody('# 2026-11-11 晨间简报\n\n## 一、昨天发生了什么\n\n无', '2026-11-11')
   assert.ok(titled.startsWith('# 2026-11-11 晨间简报'))
   assert.ok(titled.endsWith('\n'))
   assert.ok(!titled.endsWith('\n\n'))
@@ -360,25 +384,27 @@ test('normalizeMorningBriefText: compliant output kept, narration stripped, brok
     candidates: [],
     ideas: [],
     skills: 0,
+    reportText: '',
+    sessionDigests: [],
   }
   const compliant = [
     '# 2026-11-11 晨间简报',
     '',
-    '## 一、昨日回顾',
+    '## 一、昨天发生了什么',
     '',
-    '- 昨天完成 1 项。',
+    '- 昨天完成了缓存修复。',
     '',
-    '## 二、今日焦点',
+    '## 二、今天建议先做',
     '',
-    '- 补测试。',
+    '- 补登录回归测试 — 修复还没覆盖。',
     '',
     '## 三、等你处理',
     '',
-    '无',
+    '- 无',
     '',
-    '## 四、风险与提醒',
+    '## 四、提醒',
     '',
-    '无',
+    '- 工作日志 21:00。',
   ].join('\n')
 
   const kept = briefs.normalizeMorningBriefText(compliant, '2026-11-11', data)
@@ -535,6 +561,7 @@ test('TaskStore: morningBrief defaults, strict user patch, engine-owned run stat
 
     const settings = store.settings.morningBrief
     assert.deepEqual(settings, defaultMorningBrief(dir))
+    assert.deepEqual(settings.lastSuggestions, [])
     assert.equal(settings.enabled, true)
     assert.equal(settings.time, '08:30')
     assert.equal(settings.dir, join(dir, 'briefs'))
@@ -670,17 +697,26 @@ test('normalizeTask: numeric resultBackfillAt survives a reload, junk is dropped
 
 // ---------------------------------------------------------------- webhook template
 
-test('morningBriefMarkdown: date, excerpt, file path and the renderMarkdown branch', () => {
+test('morningBriefMarkdown: date, excerpt, suggestions block, file path', () => {
   const payload = {
     date: '2026-11-11',
-    content: '# 2026-11-11 晨间简报\n\n## 一、昨日回顾\n\n昨天完成 2 项。',
+    content: '# 2026-11-11 晨间简报\n\n## 一、昨天发生了什么\n\n昨天完成了缓存修复。',
     path: '/tmp/briefs/2026-11-11.md',
+    suggestions: [
+      { title: '补登录回归测试', reason: '昨天修复还没覆盖', prompt: '给登录页补 3 个回归用例', priority: 'high' },
+      { title: '整理缓存文档', reason: '缓存问题反复出现', prompt: '整理缓存排查文档', priority: 'normal' },
+    ],
   }
   const markdown = morningBriefMarkdown(payload)
   assert.ok(markdown.includes('晨间简报'))
   assert.ok(markdown.includes('2026-11-11'))
-  assert.ok(markdown.includes('昨天完成 2 项'))
+  assert.ok(markdown.includes('昨天完成了缓存修复'))
   assert.ok(markdown.includes('/tmp/briefs/2026-11-11.md'))
+  // v0.7: the notification carries the actionable suggestions.
+  assert.ok(markdown.includes('今天建议'), markdown)
+  assert.ok(markdown.includes('补登录回归测试'))
+  assert.ok(markdown.includes('昨天修复还没覆盖'))
+  assert.ok(markdown.includes('整理缓存文档'))
   assert.ok(renderMarkdown('morningBrief', payload).includes('晨间简报'))
 })
 
@@ -728,6 +764,223 @@ test('createBriefs: documented surface, meta, read validation and the 409 guard'
       engine.recoverStale()
       assert.equal(store.settings.morningBrief.lastStatus, 'failed')
       assert.equal(store.settings.morningBrief.generatingDate, null)
+    } finally {
+      engine.stop()
+    }
+  } finally {
+    cleanup()
+  }
+})
+
+// ---------------------------------------------------------------- v0.7 structured suggestions
+
+function suggestion(overrides = {}) {
+  return {
+    title: '补登录回归测试',
+    reason: '昨天修复还没覆盖',
+    prompt: '给登录页补 3 个回归用例',
+    priority: 'high',
+    ...overrides,
+  }
+}
+
+test('extractBriefSuggestions: parses and strips the JSON block, tolerates invalid JSON', () => {
+  const body = [
+    '# 2026-11-11 晨间简报',
+    '',
+    '## 一、昨天发生了什么',
+    '',
+    '- 昨天完成了缓存修复。',
+    '',
+    '## 二、今天建议先做',
+    '',
+    '- 补登录回归测试 — 修复还没覆盖。',
+    '',
+    '## 三、等你处理',
+    '',
+    '- 无',
+    '',
+    '## 四、提醒',
+    '',
+    '- 工作日志 21:00。',
+  ].join('\n')
+  const payload = [suggestion(), suggestion({ title: '整理缓存文档', priority: 'normal' })]
+  const text = `${body}\n\n<<<SUGGESTIONS_JSON>>>\n${JSON.stringify(payload)}\n<<<END_SUGGESTIONS>>>`
+  const extracted = briefs.extractBriefSuggestions(text)
+  assert.ok(extracted.content.includes('## 一、昨天发生了什么'))
+  assert.ok(!extracted.content.includes('SUGGESTIONS_JSON'), extracted.content)
+  assert.ok(!extracted.content.includes('<<<END_SUGGESTIONS>>>'))
+  assert.equal(extracted.suggestions.length, 2)
+  assert.equal(extracted.suggestions[0].title, '补登录回归测试')
+  assert.equal(extracted.suggestions[0].priority, 'high')
+  assert.equal(extracted.suggestions[1].priority, 'normal')
+
+  const malformed = briefs.extractBriefSuggestions(`${body}\n\n<<<SUGGESTIONS_JSON>>>\nnot json at all\n<<<END_SUGGESTIONS>>>`)
+  assert.ok(!malformed.content.includes('SUGGESTIONS_JSON'))
+  assert.ok(!malformed.content.includes('not json at all'))
+  assert.deepEqual(malformed.suggestions, [])
+
+  const none = briefs.extractBriefSuggestions(body)
+  assert.equal(none.content.trim(), body.trim())
+  assert.deepEqual(none.suggestions, [])
+})
+
+test('normalizeBriefSuggestions: caps at 3, drops empty titles, clamps fields and priority', () => {
+  const longTitle = 'A'.repeat(90)
+  const items = [
+    suggestion({ title: longTitle, reason: 'R'.repeat(120), prompt: 'P'.repeat(600), priority: 'urgent' }),
+    suggestion({ title: '第二条', priority: 'bogus' }),
+    suggestion({ title: '', reason: 'dropped' }),
+    suggestion({ title: '第三条', priority: 'low' }),
+    suggestion({ title: '第四条', priority: 'high' }),
+  ]
+  const normalized = briefs.normalizeBriefSuggestions(items)
+  assert.equal(normalized.length, MAX_BRIEF_SUGGESTIONS)
+  assert.equal(normalized[0].title.length, 60)
+  assert.equal(normalized[0].reason.length, 80)
+  assert.equal(normalized[0].prompt.length, 500)
+  assert.equal(normalized[0].priority, 'urgent')
+  assert.equal(normalized[1].priority, 'normal')
+  assert.equal(normalized[2].priority, 'low')
+  // The store helper behaves identically (re-exported through briefs).
+  assert.deepEqual(normalizeSuggestions(items), normalized)
+  assert.deepEqual(normalizeSuggestions(null), [])
+})
+
+test('buildFallbackSuggestions: pending first (≤2) then the newest idea', () => {
+  const candidates = [
+    { id: 'p1', title: '补测试', prompt: '为登录页补回归测试', status: 'pending', priority: 'high' },
+    { id: 'p2', title: '写周报', prompt: '整理本周工作日志', status: 'pending', priority: 'normal' },
+    { id: 'p3', title: '第三条队列', prompt: '不会进入建议', status: 'pending', priority: 'low' },
+  ]
+  const ideas = [
+    { id: 'i1', title: '研究通知中心', prompt: '调研通知中心方案', status: 'idea', priority: 'normal' },
+    { id: 'i2', title: '更旧的想法', prompt: '旧想法', status: 'idea', priority: 'normal' },
+  ]
+  const suggestions = briefs.buildFallbackSuggestions({ candidates, ideas })
+  assert.equal(suggestions.length, 3)
+  assert.deepEqual(suggestions.map(item => item.title), ['补测试', '写周报', '研究通知中心'])
+  assert.equal(suggestions[0].prompt, '为登录页补回归测试')
+  assert.ok(suggestions[0].reason.includes('队列'))
+  assert.ok(suggestions[2].reason.includes('想法'))
+  // Empty data is safe.
+  assert.deepEqual(briefs.buildFallbackSuggestions({ candidates: [], ideas: [] }), [])
+})
+
+test('TaskStore: lastSuggestions normalize, engine-only writes and persistence', () => {
+  const { dir, store, cleanup } = tempStore()
+  try {
+    assert.deepEqual(store.settings.morningBrief.lastSuggestions, [])
+    store.updateMorningBrief({
+      lastSuggestions: [
+        suggestion({ title: 'A', priority: 'urgent' }),
+        suggestion({ title: 'B', priority: 'bogus' }),
+        suggestion({ title: '' }),
+        suggestion({ title: 'C', priority: 'low' }),
+        suggestion({ title: 'D', priority: 'high' }),
+      ],
+    })
+    const saved = store.settings.morningBrief.lastSuggestions
+    assert.equal(saved.length, 3)
+    assert.deepEqual(saved.map(item => item.title), ['A', 'B', 'C'])
+    assert.equal(saved[1].priority, 'normal')
+
+    // A user settings patch never rewrites engine-owned suggestions.
+    store.updateSettings({ morningBrief: { lastSuggestions: [{ title: 'hack' }] } })
+    assert.equal(store.settings.morningBrief.lastSuggestions.length, 3)
+
+    const reloaded = new TaskStore({ dir })
+    assert.equal(reloaded.settings.morningBrief.lastSuggestions.length, 3)
+    assert.equal(reloaded.settings.morningBrief.lastSuggestions[0].title, 'A')
+  } finally {
+    cleanup()
+  }
+})
+
+test('createBriefs: generate strips suggestions, persists ≤3 and notifies the webhook payload', async () => {
+  const { dir, store, cleanup } = tempStore()
+  try {
+    const briefDir = join(dir, 'briefs')
+    store.updateSettings({ morningBrief: { dir: briefDir } })
+    // Yesterday's work journal is the primary context of the brief.
+    const reportsDir = store.settings.dailyReport.dir
+    mkdirSync(reportsDir, { recursive: true })
+    writeFileSync(join(reportsDir, '2026-11-10.md'), '# 2026-11-10 工作日志\n\n- 昨天完成了缓存修复。')
+    store.add({ title: '补测试', prompt: '为登录页补回归测试', cwd: ROOT, status: 'pending', priority: 'high' })
+
+    const answer = [
+      '# 2026-11-11 晨间简报',
+      '',
+      '## 一、昨天发生了什么',
+      '',
+      '- 昨天完成了缓存修复。',
+      '',
+      '## 二、今天建议先做',
+      '',
+      '- 补登录回归测试 — 修复还没覆盖。',
+      '',
+      '## 三、等你处理',
+      '',
+      '- 无',
+      '',
+      '## 四、提醒',
+      '',
+      '- 工作日志 21:00。',
+      '',
+      '<<<SUGGESTIONS_JSON>>>',
+      JSON.stringify([
+        suggestion({ title: '补登录回归测试' }),
+        suggestion({ title: '整理缓存文档', priority: 'normal' }),
+        suggestion({ title: '验证回滚', priority: 'low' }),
+        suggestion({ title: '第四条应被截断', priority: 'urgent' }),
+      ]),
+      '<<<END_SUGGESTIONS>>>',
+    ].join('\n')
+
+    const prompts = []
+    const bridge = {
+      createSession: async () => 'brief-session-1',
+      selectModel: async () => {},
+      prompt: async (_sessionId, text) => { prompts.push(text) },
+      lastTurnEnd: async () => ({ time: Date.now() + 10, reason: { kind: 'completed' } }),
+      summarize: async () => ({ finalAnswer: answer }),
+    }
+    const notified = []
+    const engine = briefs.createBriefs({
+      ctx: { get: () => undefined, effect: () => () => {}, logger: { warn() {} }, on: () => () => {} },
+      store,
+      bridge,
+      notify: (event, payload) => notified.push({ event, payload }),
+    })
+    try {
+      const result = engine.generate('2026-11-11')
+      assert.equal(result.ok, true)
+      const deadline = Date.now() + 10_000
+      while (engine.isGenerating() && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+      assert.equal(engine.isGenerating(), false)
+
+      const content = engine.read('2026-11-11')
+      assert.ok(content && content.startsWith('# 2026-11-11 晨间简报'))
+      assert.ok(!content.includes('SUGGESTIONS_JSON'), content)
+      assert.ok(!content.includes('<<<END_SUGGESTIONS>>>'))
+      assert.ok(content.includes('昨天完成了缓存修复'))
+
+      const stored = store.settings.morningBrief.lastSuggestions
+      assert.equal(stored.length, 3)
+      assert.deepEqual(stored.map(item => item.title), ['补登录回归测试', '整理缓存文档', '验证回滚'])
+      assert.equal(store.settings.morningBrief.lastStatus, 'ok')
+      assert.equal(store.settings.morningBrief.lastDate, '2026-11-11')
+
+      const hook = notified.find(item => item.event === 'morningBrief')
+      assert.ok(hook, notified.map(item => item.event).join(','))
+      assert.ok(Array.isArray(hook.payload.suggestions))
+      assert.equal(hook.payload.suggestions.length, 3)
+
+      // The yesterday journal text was fed into the model request.
+      assert.ok(prompts.length >= 1)
+      assert.ok(prompts[0].includes('昨天完成了缓存修复'), prompts[0].slice(0, 500))
     } finally {
       engine.stop()
     }

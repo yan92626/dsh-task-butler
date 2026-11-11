@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Host-half unit tests for the v9 self-evolution feature.
+ * Host-half unit tests for the self-evolution feature (v9 engine + v0.7
+ * retrospective/journal v2).
  *
  * These tests run without a live Harness: they import the Host modules, drive
  * the pure helpers, and exercise TaskStore against a temporary state directory.
@@ -20,6 +21,14 @@ import { retrospectiveMarkdown } from '../host/webhook.js'
 
 const ROOT = '/repo'
 const PROJECT = '/repo/proj'
+// v0.7 retrospective v2: five fixed sections, evidence lives in the body.
+const RETRO_HEADINGS = [
+  '## 一、这段时间在做什么',
+  '## 二、反复出现的问题',
+  '## 三、有效的做法',
+  '## 四、下个周期只改 3 件事',
+  '## 五、值得固化的规则/技能',
+]
 
 function tempStore() {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-ps-evo-'))
@@ -219,6 +228,10 @@ function retrospectiveInput(overrides = {}) {
     corrections: [{ taskTitle: 'Fix login flow', cwd: PROJECT, messages: [{ text: '别用 pnpm，仓库锁文件是 npm 的。', time: 1 }] }],
     errors: [{ title: 'Vendor the chart library', error: 'npm install blocked' }],
     activeTasks: [{ id: 't3', title: 'Migrate settings page', status: 'running', cwd: PROJECT }],
+    journals: [
+      { date: '2026-11-05', text: '# 2026-11-05 工作日志\n\n## 一、今日要点\n\n- 修复了登录页缓存问题，补了 3 个回归测试。' },
+      { date: '2026-11-06', text: '# 2026-11-06 工作日志\n\n## 二、逐项记录\n\n- **整理构建脚本**：发现 lockfile 变更未提交，补上后 CI 缓存命中。' },
+    ],
     lessons: [lesson({ text: 'Use npm lockfile, not pnpm' })],
     skills: [{ name: 'existing-skill', description: 'already covered' }],
     skillMode: 'ask',
@@ -226,17 +239,23 @@ function retrospectiveInput(overrides = {}) {
   }
 }
 
-test('buildRetrospectivePrompt: carries data, existing state and the output markers', () => {
+test('buildRetrospectivePrompt: new five sections, journals and the output markers', () => {
+  assert.deepEqual(evo.REPORT_SECTIONS, RETRO_HEADINGS)
   const prompt = evo.buildRetrospectivePrompt(retrospectiveInput())
   assert.ok(prompt.includes('<<<RETROSPECTIVE>>>'))
   assert.ok(prompt.includes('<<<LESSONS_JSON>>>'))
   assert.ok(prompt.includes('<<<SKILLS_JSON>>>'))
   assert.ok(prompt.includes('<<<END>>>'))
+  for (const heading of RETRO_HEADINGS) assert.ok(prompt.includes(heading), heading)
   assert.ok(prompt.includes('Vendor the chart library'))
   assert.ok(prompt.includes('npm install blocked'))
   assert.ok(prompt.includes('别用 pnpm'))
   assert.ok(prompt.includes('existing-skill'))
   assert.ok(prompt.includes('Use npm lockfile, not pnpm'))
+  // v0.7: the period's work journals are inserted into the request.
+  assert.ok(prompt.includes('补了 3 个回归测试'), 'journal text must reach the prompt')
+  assert.ok(prompt.includes('lockfile 变更未提交'), 'journal text must reach the prompt')
+  assert.ok(/700\s*[–-]\s*1100/.test(prompt), 'retrospective length window')
   const off = evo.buildRetrospectivePrompt(retrospectiveInput({ skillMode: 'off' }))
   assert.ok(!off.includes('<<<SKILLS_JSON>>>'))
 })
@@ -247,8 +266,8 @@ test('extractEvolutionSections: markers, fenced JSON and missing markers', () =>
     '<<<RETROSPECTIVE>>>',
     '# 2026-11-06 复盘',
     '',
-    '## 一、本期概览',
-    '- 完成 1 项',
+    '## 一、这段时间在做什么',
+    '- 修复登录页缓存问题',
     '<<<LESSONS_JSON>>>',
     '```json',
     '[{"text":"Use npm","category":"process","scope":"global","evidence":"task A"}]',
@@ -258,7 +277,7 @@ test('extractEvolutionSections: markers, fenced JSON and missing markers', () =>
     '<<<END>>>',
   ].join('\n')
   const sections = evo.extractEvolutionSections(text)
-  assert.ok(sections.report.includes('本期概览'))
+  assert.ok(sections.report.includes('这段时间在做什么'))
   assert.ok(String(sections.lessonsRaw).includes('Use npm'))
   assert.ok(String(sections.skillsRaw).includes('run-tests'))
   const plain = evo.extractEvolutionSections('# 2026-11-06 复盘\n\nall free text')
@@ -275,11 +294,14 @@ test('extractRetrospectiveBody: always yields the fixed title and one trailing n
   assert.ok(!withTitle.endsWith('\n\n'))
 })
 
-test('buildRetrospectiveFallback: deterministic report with the standard sections', () => {
+test('buildRetrospectiveFallback: deterministic report with the new five sections', () => {
   const report = evo.buildRetrospectiveFallback(retrospectiveInput())
   assert.ok(report.startsWith('# 2026-11-06 复盘'))
-  assert.ok(report.includes('本期概览'))
-  assert.ok(report.includes('错误与用户纠正'))
+  for (const heading of RETRO_HEADINGS) assert.ok(report.includes(heading), heading)
+  assert.ok(report.includes('Vendor the chart library'))
+  assert.ok(!report.includes('本期概览'))
+  assert.ok(!report.includes('错误与用户纠正'))
+  assert.ok(!/undefined|NaN|\[object Object\]/.test(report))
 })
 
 test('retrospective file list/read round-trip and validation', () => {
@@ -297,6 +319,64 @@ test('retrospective file list/read round-trip and validation', () => {
     assert.deepEqual(evo.listRetrospectiveFiles(join(dir, 'missing')), [])
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('collectJournalTexts: reads in-window journals, capped and ordered', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-ps-journals-'))
+  try {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, '2026-11-01.md'), '# 2026-11-01 工作日志\n\n- outside window')
+    writeFileSync(join(dir, '2026-11-05.md'), '# 2026-11-05 工作日志\n\n- day five')
+    writeFileSync(join(dir, '2026-11-06.md'), '# 2026-11-06 工作日志\n\n- day six')
+    writeFileSync(join(dir, '2026-11-07.md'), '# 2026-11-07 工作日志\n\n- day seven')
+    writeFileSync(join(dir, 'notes.txt'), 'ignore me')
+
+    const since = at('2026-11-05', 0, 0)
+    const until = at('2026-11-06', 23, 0)
+    const journals = evo.collectJournalTexts(dir, since, until)
+    assert.deepEqual(journals.map(item => item.date), ['2026-11-05', '2026-11-06'])
+    assert.ok(journals[0].text.includes('day five'))
+
+    // Cap: at most 7 journals by default.
+    for (let day = 5; day <= 15; day += 1) {
+      writeFileSync(join(dir, `2026-11-${String(day).padStart(2, '0')}.md`), `# 2026-11-${day} 工作日志\n\n- entry ${day}`)
+    }
+    const capped = evo.collectJournalTexts(dir, at('2026-11-02', 0, 0), at('2026-11-30', 0, 0))
+    assert.equal(capped.length, 7)
+    // The cap keeps the most recent 7 journals, still in ascending date order.
+    assert.deepEqual(capped.map(item => item.date),
+      ['2026-11-09', '2026-11-10', '2026-11-11', '2026-11-12', '2026-11-13', '2026-11-14', '2026-11-15'])
+    // Each journal text is capped at 800 chars (plus the ellipsis marker).
+    for (const item of capped) assert.ok(item.text.length <= 801, String(item.text.length))
+
+    // Missing directory is simply empty.
+    assert.deepEqual(evo.collectJournalTexts(join(dir, 'missing'), since, until), [])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('collectRetrospectiveData: exposes the window journals for the prompt', async () => {
+  const { store, cleanup } = tempStore()
+  try {
+    const reportsDir = store.settings.dailyReport.dir
+    mkdirSync(reportsDir, { recursive: true })
+    writeFileSync(join(reportsDir, '2026-11-05.md'), '# 2026-11-05 工作日志\n\n- 修复了缓存问题。')
+    writeFileSync(join(reportsDir, '2026-11-06.md'), '# 2026-11-06 工作日志\n\n- 补了 3 个回归测试。')
+    writeFileSync(join(reportsDir, '2025-01-01.md'), '# 2025-01-01 工作日志\n\n- 窗口之外。')
+    const data = await evo.collectRetrospectiveData({
+      store,
+      bridge: {},
+      since: at('2026-11-05', 0, 0),
+      until: at('2026-11-06', 23, 0),
+    })
+    assert.deepEqual(data.journals.map(item => item.date), ['2026-11-05', '2026-11-06'])
+    assert.ok(data.journals[0].text.includes('缓存问题'))
+    assert.ok(!JSON.stringify(data.journals).includes('2025-01-01'))
+    assert.ok(Array.isArray(data.tasks) && Array.isArray(data.corrections))
+  } finally {
+    cleanup()
   }
 })
 

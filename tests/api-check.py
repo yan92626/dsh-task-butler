@@ -17,10 +17,18 @@ Usage:
 --evolution adds v9 read-only checks for the retrospective / lessons / skills API. It
 never triggers a retrospective, so it does not spend model time or change your state.
 
---briefs adds a v0.6 section that reads `/briefs` and, only when today's brief does not
-exist yet, POSTs `/briefs/generate` (a real model session, up to a few minutes). The
-generated file is deleted in the cleanup pass. On an older Host (0.5.x) every v0.6
-check is skipped with a notice instead of failing.
+--briefs adds a v0.6+ section that reads `/briefs` and, only when today's brief does
+not exist yet, POSTs `/briefs/generate` (a real model session, up to a few minutes).
+The generated file is deleted in the cleanup pass. On an older Host (0.5.x) every
+v0.6 check is skipped with a notice instead of failing; on a 0.6 Host the v0.7
+version/new-field assertions are skipped with a note (the Host simply was not
+reloaded yet). v0.7 also checks that `settings.morningBrief.lastSuggestions` is a
+list capped at 3 with the documented item shape (never specific profile values).
+
+Cleanup limitation: the Host's morning-brief run bookkeeping (lastDate/lastStatus)
+has no public API to restore, so after `--briefs` the profile correctly records
+"brief generated today"; only the file is removed. Use the UI's 立即生成 if a clean
+slate is needed.
 """
 import argparse
 import json
@@ -201,8 +209,9 @@ def restore_original(base):
         if path and not existed:
             try:
                 os.unlink(path)
-            except OSError:
-                pass
+                print("     已删除本次自检生成的晨报文件。")
+            except OSError as error:
+                print(f"     注意：未能删除自检生成的晨报文件：{path}（{error}）")
 
 
 def main():
@@ -255,12 +264,17 @@ def main():
         # regression of this suite.
         version = str(payload.get("version") or "")
         check("plugin version readable", status == 200 and bool(version), payload)
-        is_v06 = version.startswith("0.6")
-        if is_v06:
-            check("version is 0.6.0", version == "0.6.0", version)
+        is_v07 = version.startswith("0.7")
+        # v0.7 replaced v0.6; an old 0.6 Host is a "not reloaded yet" state, not a
+        # regression, so the version/new-field assertions are skipped with a note.
+        is_v06_plus = version.startswith(("0.6", "0.7"))
+        if is_v07:
+            check("version is 0.7.0", version == "0.7.0", version)
+        elif version.startswith("0.6"):
+            print(f"     当前 live Host 版本 {version}（尚未热加载 v0.7）；"
+                  "按约定跳过 0.7 版本与新字段断言，以单测/静态为准。")
         else:
-            print(f"     当前 Host 版本 {version or '未知'}（旧版，未含 v0.6 端点）；"
-                  "晨间简报检查将优雅跳过，不误报失败。")
+            check("version is 0.7.0", False, version)
         status, payload = request(base, "POST", "/secretary/api/settings", {"concurrency": 1},
                                   origin="https://evil.example")
         check("cross-origin POST is rejected", status == 403, (status, payload))
@@ -371,8 +385,8 @@ def main():
         status, payload = request(base, "GET", "/secretary/api/backups")
         check("backups list readable", status == 200 and isinstance(payload.get("backups"), list), status)
 
-        print("8b. morning briefs (v0.6, read-only)")
-        if not is_v06:
+        print("8b. morning briefs (v0.6+, read-only)")
+        if not is_v06_plus:
             print("     跳过：当前运行的是旧版 Host（没有 /briefs），不误报失败。")
         else:
             status, payload = request(base, "GET", "/secretary/api/briefs")
@@ -385,6 +399,19 @@ def main():
                   and isinstance(brief_settings.get("enabled"), bool),
                   brief_settings)
             check("briefs list is an array", isinstance(payload.get("briefs"), list), payload.get("briefs"))
+            if is_v07:
+                suggestions = brief_settings.get("lastSuggestions")
+                check("morning brief carries lastSuggestions",
+                      isinstance(suggestions, list), brief_settings)
+                if isinstance(suggestions, list):
+                    check("lastSuggestions is capped at 3", len(suggestions) <= 3, suggestions)
+                    if suggestions:
+                        item = suggestions[0]
+                        check("lastSuggestions item shape",
+                              isinstance(item, dict)
+                              and isinstance(item.get("title"), str)
+                              and item.get("priority") in ("urgent", "high", "low", "normal"),
+                              item)
             status, payload = request(base, "GET", "/secretary/api/briefs/content?date=1999-01-01")
             check("missing brief -> 404", status == 404, payload)
             status, payload = request(base, "GET", "/secretary/api/briefs/content?date=not-a-date")
@@ -575,7 +602,7 @@ def main():
 
         if args.briefs:
             print("13. morning brief generation (opt-in, calls a real model session)")
-            if not is_v06:
+            if not is_v06_plus:
                 print("     跳过：当前运行的是旧版 Host（没有 /briefs），不误报失败。")
             else:
                 global BRIEF_CREATED
@@ -620,9 +647,14 @@ def main():
                     check("brief generation recorded",
                           brief_state.get("lastStatus") == "ok"
                           and brief_state.get("lastDate") == today, brief_state)
+                    check("brief generation did not leave a pending generation",
+                          not brief_state.get("generatingDate"), brief_state)
                     brief_dir = brief_state.get("dir") or ""
                     if brief_dir:
                         BRIEF_CREATED = (os.path.join(brief_dir, f"{today}.md"), False)
+                        print("     说明：清理阶段只删除本次生成的晨报文件；"
+                              "Host 的 lastDate/lastStatus 运行态没有公开 API 可回滚，"
+                              "今天的自动生成不会重跑（需要时请在界面点「立即生成」）。")
 
         if args.evolution:
             print("9. self-evolution API (v9, read-only)")

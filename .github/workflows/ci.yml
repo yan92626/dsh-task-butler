@@ -20,5 +20,5 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: Static checks (packaging, palette, client contract)
         run: node tests/static-check.mjs
-      - name: Host unit tests (evolution + morning brief pure functions and store API)
-        run: node --test tests/evolution-unit.mjs tests/briefs-unit.mjs
+      - name: Host unit tests (work log, morning brief, retrospective and store API)
+        run: node --test tests/logs-unit.mjs tests/evolution-unit.mjs tests/briefs-unit.mjs

@@ -1,18 +1,15 @@
 /**
- * Self-evolution engine (v9).
+ * Self-evolution engine (v9, journal-aware in v0.7).
  *
  * A retrospective is a scheduled review of a time window of secretary work:
- * the Host aggregates the window's tasks, failures and the user's follow-up
- * corrections, a model turns them into a report plus actionable lesson rules
- * (and, optionally, reusable skills), and everything is persisted under the
- * secretary state directory. Lessons are archived for review only: task
- * prompts are never prefixed with them (the conversation must contain exactly
- * what the user wrote); active skills are exposed to DSH sessions through a
+ * the Host aggregates the window's work journals (the `reports/YYYY-MM-DD.md`
+ * files), task results, failures and the user's follow-up corrections, a model
+ * turns them into a report plus actionable lesson rules (and, optionally,
+ * reusable skills), and everything is persisted under the secretary state
+ * directory. Lessons are archived for review only: task prompts are never
+ * prefixed with them (the conversation must contain exactly what the user
+ * wrote); active skills are exposed to DSH sessions through a
  * runtime skill provider.
- *
- * The pure functions in this module are the contract other modules and the
- * unit tests rely on; `createEvolution` owns the timer, the Session, and the
- * provider registration.
  */
 import {
   existsSync,
@@ -54,11 +51,15 @@ export const EVOLUTION_SKILL_RANK = 250
 
 const RETROSPECTIVE_LIST_LIMIT = 200
 const RETROSPECTIVE_FILE_PATTERN = /^\d{4}-\d{2}-\d{2}\.md$/
+const JOURNAL_FILE_PATTERN = /^\d{4}-\d{2}-\d{2}\.md$/
 const MAX_REPORT_CHARS = 20_000
 const MAX_PROMPT_TASKS = 40
 const MAX_PROMPT_ACTIVE_TASKS = 20
 const MAX_PROMPT_CORRECTIONS = 15
-const MAX_RETRO_PROMPT_CHARS = 19_000
+const MAX_PROMPT_JOURNALS = 7
+const MAX_JOURNAL_CHARS = 800
+const MAX_TASK_RESULT_CHARS = 300
+const MAX_RETRO_PROMPT_CHARS = 30_000
 
 const LESSON_PROMPT_HEADING = '## 任务管家 · 过往复盘经验（执行任务时必须遵守，避免重犯）'
 
@@ -75,12 +76,13 @@ const STATUS_LABELS = {
 
 const ACTIVE_TASK_STATUSES = ['pending', 'running', 'paused', 'blocked']
 
+// v0.7 fixed sections (text and order are part of the contract).
 const REPORT_SECTIONS = [
-  '## 一、本期概览',
-  '## 二、做得好',
-  '## 三、错误与用户纠正',
-  '## 四、经验规则',
-  '## 五、可沉淀为 Skill 的重复模式',
+  '## 一、这段时间在做什么',
+  '## 二、反复出现的问题',
+  '## 三、有效的做法',
+  '## 四、下个周期只改 3 件事',
+  '## 五、值得固化的规则/技能',
 ]
 
 // ---------------------------------------------------------------------------
@@ -293,6 +295,53 @@ function tasksInWindow(store, since, until) {
 }
 
 /** Tasks that are still open right now (regardless of the window). */
+/**
+ * Read the work journals (`reports/YYYY-MM-DD.md`) that fall inside the
+ * retrospective window: at most `maxJournals` (default 7), each clipped to
+ * `maxChars` (default 800), oldest first. A missing directory returns [].
+ */
+export function collectJournalTexts(reportDir, since, until, options = {}) {
+  if (typeof reportDir !== 'string' || reportDir === '') return []
+  const from = Number.isFinite(since) ? since : (Number.isFinite(until) ? until - 24 * 60 * 60 * 1000 : Date.now() - 24 * 60 * 60 * 1000)
+  const to = Number.isFinite(until) ? until : Date.now()
+  const startDate = localDateString(from)
+  const endDate = localDateString(to)
+  const maxJournals = Number.isFinite(options.maxJournals)
+    ? Math.max(0, Math.floor(options.maxJournals))
+    : MAX_PROMPT_JOURNALS
+  const maxChars = Number.isFinite(options.maxChars)
+    ? Math.max(0, Math.floor(options.maxChars))
+    : MAX_JOURNAL_CHARS
+  if (maxJournals === 0 || maxChars === 0) return []
+  let names = []
+  try {
+    names = readdirSync(reportDir)
+  } catch {
+    return []
+  }
+  const journals = []
+  for (const name of names) {
+    if (!JOURNAL_FILE_PATTERN.test(name)) continue
+    const date = name.slice(0, -3)
+    if (date < startDate || date > endDate) continue
+    const path = join(reportDir, name)
+    try {
+      const info = statSync(path)
+      if (!info.isFile()) continue
+      const text = readFileSync(path, 'utf8').trim()
+      if (!text) continue
+      journals.push({
+        date,
+        text: text.length > maxChars ? `${text.slice(0, maxChars)}…` : text,
+      })
+    } catch {
+      // An unreadable journal is simply skipped.
+    }
+  }
+  journals.sort((left, right) => (left.date < right.date ? -1 : left.date > right.date ? 1 : 0))
+  return journals.slice(-maxJournals)
+}
+
 function activeQueueTasks(store) {
   return (store.tasks || []).filter(task =>
     task && task.source === 'queue' && ACTIVE_TASK_STATUSES.includes(task.status))
@@ -375,7 +424,14 @@ export async function collectRetrospectiveData({ store, bridge, since, until, op
     }
   }
 
-  return { date, tasks, corrections, errors, activeTasks }
+  // v0.7: the window's work journals are the primary "what happened" source.
+  const reportDir = store && store.settings && store.settings.dailyReport &&
+    typeof store.settings.dailyReport.dir === 'string'
+    ? store.settings.dailyReport.dir
+    : ''
+  const journals = collectJournalTexts(reportDir, from, to, options)
+
+  return { date, tasks, corrections, errors, activeTasks, journals }
 }
 
 // ---------------------------------------------------------------------------
@@ -385,21 +441,20 @@ export async function collectRetrospectiveData({ store, bridge, since, until, op
 function describeTaskLine(task) {
   const parts = [`[${statusLabel(task.status)}] ${task.title || '未命名任务'}`]
   parts.push(`失败：${task.status === 'failed' ? '是' : '否'}`)
-  if (task.error) parts.push(`错误：${compactText(task.error, 200)}`)
+  if (task.error) parts.push(`错误：${compactText(task.error, MAX_TASK_RESULT_CHARS)}`)
   const summary = task.resultSummary
     || (task.result && task.result.finalAnswer)
     || task.resultPreview
     || ''
-  if (summary) parts.push(`结果：${compactText(summary, 200)}`)
-  if (task.cwd) parts.push(`目录：${task.cwd}`)
-  if (Number.isFinite(task.durationMs)) parts.push(`耗时：${formatDuration(task.durationMs)}`)
+  if (summary) parts.push(`结果：${compactText(summary, MAX_TASK_RESULT_CHARS)}`)
   return `- ${parts.join('；')}`
 }
 
 function describeActiveTaskLine(task) {
   const parts = [`[${statusLabel(task.status)}] ${task.title || '未命名任务'}`]
-  if (task.cwd) parts.push(`目录：${task.cwd}`)
-  if (task.error) parts.push(`错误：${compactText(task.error, 200)}`)
+  if (task.error) parts.push(`错误：${compactText(task.error, MAX_TASK_RESULT_CHARS)}`)
+  const last = task.lastMessage ? compactText(task.lastMessage, MAX_TASK_RESULT_CHARS) : ''
+  if (last) parts.push(`进展：${last}`)
   return `- ${parts.join('；')}`
 }
 
@@ -413,6 +468,10 @@ function skillModeLabel(mode) {
  * The fixed retrospective request. Data blocks are plain Markdown; the output
  * contract is the three marker sections parsed by `extractEvolutionSections`.
  */
+/**
+ * The fixed v0.7 retrospective request. Data blocks are plain Markdown; the
+ * output contract is the marker sections parsed by `extractEvolutionSections`.
+ */
 export function buildRetrospectivePrompt(input = {}) {
   const date = typeof input.date === 'string' && isRealDate(input.date) ? input.date : localDateString()
   const until = Number.isFinite(input.until) ? input.until : Date.now()
@@ -421,11 +480,11 @@ export function buildRetrospectivePrompt(input = {}) {
   const corrections = Array.isArray(input.corrections) ? input.corrections : []
   const errors = Array.isArray(input.errors) ? input.errors : []
   const activeTasks = Array.isArray(input.activeTasks) ? input.activeTasks : []
+  const journals = Array.isArray(input.journals) ? input.journals : []
   const lessons = Array.isArray(input.lessons) ? input.lessons : []
   const skills = Array.isArray(input.skills) ? input.skills : []
   const skillMode = input.skillMode === 'off' || input.skillMode === 'auto' ? input.skillMode : 'ask'
 
-  const failedCount = tasks.filter(task => task.status === 'failed').length
   const windowText = since === null
     ? '此前没有成功复盘记录，本次覆盖最近一段时间的任务活动'
     : `${localDateTimeString(since)} 至 ${localDateTimeString(until)}`
@@ -436,8 +495,11 @@ export function buildRetrospectivePrompt(input = {}) {
   const activeLines = activeTasks.length
     ? activeTasks.slice(0, MAX_PROMPT_ACTIVE_TASKS).map(describeActiveTaskLine)
     : ['- 无']
+  const journalLines = journals.length
+    ? journals.map(journal => `- ${journal.date}：\n${String(journal.text || '').replace(/\n{2,}/g, '\n')}`)
+    : ['- 无']
   const errorLines = errors.length ? errors.slice(0, MAX_PROMPT_TASKS).map(entry =>
-    `- 任务「${entry.title}」的失败原因：${compactText(entry.error, 300)}`) : ['- 无']
+    `- 任务「${entry.title}」的失败原因：${compactText(entry.error, MAX_TASK_RESULT_CHARS)}`) : ['- 无']
 
   const correctionLines = []
   for (const item of corrections) {
@@ -465,10 +527,12 @@ export function buildRetrospectivePrompt(input = {}) {
     '## 数据',
     `- 复盘日期：${date}`,
     `- 覆盖窗口：${windowText}`,
-    `- 任务数量：${tasks.length}（失败 ${failedCount}）`,
     `- 技能沉淀模式：${skillModeLabel(skillMode)}`,
     '',
-    '### 本期任务',
+    '### 本期工作日志（真实工作记录，优先使用）',
+    ...journalLines,
+    '',
+    '### 本期任务（结果摘要）',
     ...taskLines,
     '',
     '### 当前活跃任务',
@@ -506,17 +570,23 @@ export function buildRetrospectivePrompt(input = {}) {
     '<<<END>>>',
     '',
     '## 要求',
-    '1. 报告必须使用上面给出的五个二级标题与顺序，正文不超过 1200 字；只写有数据依据的内容，没有内容的小节写「无」。',
-    '2. 经验规则只输出**新增或需要更新**的规则；已有经验不得重复输出（除非补充证据）；每条是可执行祈使句、不超过 80 字；优先从「用户纠正」与「失败原因」提炼；没有新增就输出 []；最多 8 条。',
+    '1. 报告必须使用上面给出的五个二级标题与顺序，正文 700–1100 字；只写有数据依据的内容，没有内容的小节写「- 无」。',
+    '2. 「一、这段时间在做什么」按项目/主题分组，2–4 组，写清具体产出与结论，优先使用工作日志与任务结果。',
+    '3. 「二、反复出现的问题」每条必须带证据（具体任务/会话标题或日志中的原始描述）；没有就写「- 无」。',
+    '4. 「三、有效的做法」写 2–4 条可复用的方法（结合工作日志与用户纠正）。',
+    '5. 「四、下个周期只改 3 件事」写 1–3 条具体、可执行、可验证的行动。',
+    '6. 「五、值得固化的规则/技能」与 lessons/skills 呼应，可写「- 无」。',
+    '7. 不写 token、模型、路径、会话 ID 或耗时等元数据；不要复述整篇日志原文。',
+    '8. 经验规则只输出**新增或需要更新**的规则；已有经验不得重复输出（除非补充证据）；每条是可执行祈使句、不超过 80 字；优先从「用户纠正」与「失败原因」提炼；没有新增就输出 []；最多 8 条。',
   ]
   if (skillMode !== 'off') {
     lines.push(
-      `3. 技能只在发现「同类任务重复出现 ≥2 次」或「标准化流程明确」时输出，最多 3 条；不得与已有技能同名；必须是可复用的指令包而不是一次性任务描述；没有就输出 []${skillMode === 'auto' ? '；生成的技能会被直接启用' : '；生成的技能会作为候选等待用户采用'}。`,
+      `9. 技能只在发现「同类任务重复出现 ≥2 次」或「标准化流程明确」时输出，最多 3 条；不得与已有技能同名；必须是可复用的指令包而不是一次性任务描述；没有就输出 []${skillMode === 'auto' ? '；生成的技能会被直接启用' : '；生成的技能会作为候选等待用户采用'}。`,
     )
   }
   lines.push(
-    '4. 项目作用域判断：与特定仓库/目录强相关的放 project 并填该任务绝对目录；通用工作方式放 global。',
-    '5. 不要编造数据中不存在的任务、结果或纠正；不得输出规定 marker 之外的内容。',
+    '10. 项目作用域判断：与特定仓库/目录强相关的放 project 并填该任务绝对目录；通用工作方式放 global。',
+    '11. 不要编造数据中不存在的任务、结果或纠正；不得输出规定 marker 之外的内容。',
   )
 
   let prompt = lines.join('\n')
@@ -843,53 +913,79 @@ export function readRetrospectiveFile(dir, date) {
 // ---------------------------------------------------------------------------
 
 /** Deterministic report assembled from the gathered data, no model needed. */
+/** Concrete bullet lines out of a journal body (markdown headings skipped). */
+function journalBullets(text, limit = 2) {
+  const out = []
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.trim()
+    if (!/^[-*+]\s+/.test(line)) continue
+    const cleaned = compactText(line.replace(/^[-*+]\s+/, '').replace(/[*`_]/g, ''), 160)
+    if (cleaned) out.push(cleaned)
+    if (out.length >= limit) break
+  }
+  return out
+}
+
+/** Deterministic report assembled from the gathered data, no model needed. */
 export function buildRetrospectiveFallback(data = {}) {
   const date = typeof data.date === 'string' && isRealDate(data.date) ? data.date : localDateString()
   const tasks = Array.isArray(data.tasks) ? data.tasks : []
-  const corrections = Array.isArray(data.corrections) ? data.corrections : []
+  const journals = Array.isArray(data.journals) ? data.journals : []
   const errors = Array.isArray(data.errors) ? data.errors : []
   const activeTasks = Array.isArray(data.activeTasks) ? data.activeTasks : []
   const completed = tasks.filter(task => task.status === 'done')
   const failed = tasks.filter(task => task.status === 'failed')
-  const correctionCount = corrections.reduce((total, item) =>
-    total + (Array.isArray(item.messages) ? item.messages.length : 0), 0)
 
   const lines = [`# ${date} 复盘`, '', REPORT_SECTIONS[0], '']
-  if (tasks.length === 0 && activeTasks.length === 0) {
-    lines.push('本期没有任务活动。')
-  } else {
-    lines.push(`本期共 ${tasks.length} 项任务有活动：完成 ${completed.length} 项，失败 ${failed.length} 项；当前活跃任务 ${activeTasks.length} 项；记录到用户纠正/补充 ${correctionCount} 条。`)
+  const doing = []
+  for (const journal of journals.slice(-3)) {
+    for (const bullet of journalBullets(journal.text, 2)) {
+      doing.push(`- ${journal.date}：${bullet}`)
+    }
   }
+  for (const task of completed.slice(0, 6)) {
+    const answer = compactText(task.result && task.result.finalAnswer, 120)
+    doing.push(`- 完成「${task.title}」${answer ? `：${answer}` : ''}`)
+  }
+  for (const task of activeTasks.slice(0, 4)) {
+    doing.push(`- 进行中「${task.title}」（${statusLabel(task.status)}）`)
+  }
+  if (doing.length === 0) lines.push('- 本期没有记录到任务活动。')
+  else lines.push(...doing.slice(0, 8))
 
   lines.push('', REPORT_SECTIONS[1], '')
-  if (completed.length > 0) {
-    for (const task of completed.slice(0, 10)) {
-      lines.push(`- 完成「${task.title}」${task.resultSummary ? `：${compactText(task.resultSummary, 60)}` : ''}`)
-    }
-  } else {
-    lines.push('无')
+  const problems = []
+  for (const entry of errors.slice(0, 5)) {
+    problems.push(`- 「${entry.title}」：${compactText(entry.error, MAX_TASK_RESULT_CHARS)}`)
   }
+  for (const entry of failed.slice(0, 3)) {
+    if (problems.some(line => line.includes(entry.title))) continue
+    problems.push(`- 「${entry.title}」失败：${compactText(entry.error || '未记录原因', MAX_TASK_RESULT_CHARS)}`)
+  }
+  if (problems.length === 0) lines.push('- 无')
+  else lines.push(...problems.slice(0, 6))
 
   lines.push('', REPORT_SECTIONS[2], '')
-  if (errors.length > 0) {
-    for (const entry of errors.slice(0, 10)) lines.push(`- 失败「${entry.title}」：${compactText(entry.error, 200)}`)
+  if (completed.length > 0) {
+    lines.push(`- 本期已完成 ${completed.length} 项任务，可复用其中已验证的处理流程：${completed.slice(0, 3).map(task => task.title).join('、')}。`)
+  } else {
+    lines.push('- 暂无足够数据归纳有效做法，下个周期继续观察。')
   }
-  let correctionLines = 0
-  for (const item of corrections) {
-    for (const message of Array.isArray(item.messages) ? item.messages : []) {
-      if (correctionLines >= 10) break
-      lines.push(`- 用户纠正「${item.taskTitle}」：${compactText(message.text, 200)}`)
-      correctionLines += 1
-    }
-    if (correctionLines >= 10) break
-  }
-  if (errors.length === 0 && correctionLines === 0) lines.push('无')
 
   lines.push('', REPORT_SECTIONS[3], '')
-  lines.push('- 本次复盘由本地兜底生成（模型未返回可用内容），经验规则本次不更新，原有经验保持不变。')
+  const actions = []
+  for (const task of activeTasks.slice(0, 3)) {
+    actions.push(`- 推进「${task.title}」：先处理当前阻塞或确认可收尾。`)
+  }
+  for (const entry of errors.slice(0, 2)) {
+    if (actions.length >= 3) break
+    actions.push(`- 复盘「${entry.title}」的失败原因，给出可验证的修复动作。`)
+  }
+  if (actions.length === 0) actions.push('- 从队列里挑一件最重要的任务，先推进到可验收状态。')
+  lines.push(...actions.slice(0, 3))
 
   lines.push('', REPORT_SECTIONS[4], '')
-  lines.push('- 本次未识别到新的技能候选。')
+  lines.push('- 本次复盘由本地兜底生成（模型未返回可用内容），经验与技能本次不更新，原有内容保持不变。')
 
   return `${lines.join('\n').replace(/\n{3,}/g, '\n\n').trim()}\n`
 }
@@ -1174,6 +1270,7 @@ export function createEvolution({ ctx, store, bridge, notify, options = {} }) {
         corrections: collected.corrections,
         errors: collected.errors,
         activeTasks: collected.activeTasks,
+        journals: collected.journals,
         lessons: store.evolution.lessons,
         skills: store.evolution.skills,
         skillMode,
@@ -1333,4 +1430,4 @@ export function createEvolution({ ctx, store, bridge, notify, options = {} }) {
   }
 }
 
-export { MAX_LESSONS, MAX_SKILLS, localDateString, localTimeString, isRealDate, REPORT_SECTIONS, STATUS_LABELS }
+export { MAX_LESSONS, MAX_SKILLS, MAX_PROMPT_JOURNALS, MAX_JOURNAL_CHARS, localDateString, localTimeString, isRealDate, REPORT_SECTIONS, STATUS_LABELS }

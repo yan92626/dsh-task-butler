@@ -1,26 +1,23 @@
 /**
- * dsh-personal-secretary — browser half (v0.6).
+ * dsh-personal-secretary — browser half (v0.7).
  *
- * 任务管家：你交代，我盯着——今日焦点、待你处理、日报与复盘。
- *  - 两个一级视图：今日（默认）/ 任务。今日工作台回答「今天做什么 / 什么需要我」：
- *    问候与「我在盯着」、一句话快捷捕获、晨间简报卡、待你处理、今日焦点、进行中、
- *    今日完成，右栏今日小账 / 快捷入口 / 通知卡
- *  - 通知中心：头部铃铛 + 未读数字 + popover（待你处理 + 最近动态 + 全部标记已读），
- *    另有 Webhook「通知记录」弹窗（`GET /webhook/log`）
- *  - 任务视图：想法 / 队列 / 进行中 / 已结束 四列卡片看板
- *  - 每列独立的搜索框 + 漏斗筛选弹层（状态/优先级/来源），列间互不影响；
- *    筛选生效时列头数量显示 `x/y`，空结果显示「没有匹配的任务」+ 清除操作
- *  - 统一的四段式卡片：身份行（优先级旗 + 标题 + 始终可见状态徽章 + DSH 图标）/
- *    固定两行上下文 / 元信息行 1（目录·DSH 标签）/ 元信息行 2（时间·耗时·模型·tokens·轮次）
- *  - 跨列拖拽：想法 ⇄ 队列（promote / demote），队列内部拖拽排序 + Alt+↑↓
- *  - 按状态/优先级着色的卡片（淡色底、左侧色条、徽章）与克制的 hover 动效
- *  - 按状态提供操作：加入队列 / 退回想法 / 执行 / 编辑 / 下一个执行 / 暂停 / 继续 / 停止本轮 / 重试 / 删除 / 打开会话
- *  - 独立「设置」模态弹窗（执行 / 桌面提醒 / 消息推送 / 日报 / 晨间简报 / 复盘与沉淀，变更即保存）；
- *    日报与晨报执行时间使用 24 小时制 HH:mm 文本输入（自动补冒号，提交前校验，非法不提交）
- *  - 日报抽屉、晨间简报抽屉（日期列表 + Markdown 原文 + 立即生成 / 刷新）
- *  - 复盘与沉淀：页头「复盘」入口（技能候选徽标）+ 三 tab 抽屉（复盘 / 经验 / 技能），
- *    手动立即复盘（3s 轮询直到结束）、经验规则增删启停、技能候选采用/启停/删除/查看原文
- *  - 轮询（refcount、隐藏页暂停）、错误横幅、toast、系统通知、导出、拖拽 + 键盘排序
+ * 任务管家：你交代，我盯着。
+ *  - 两个一级视图：今日（默认）/ 任务。今日页只保留三块 + 页脚：
+ *    问候与一句话快捷捕获、今日简报（摘要 + 今天建议一键加入队列）、
+ *    等你处理（≤3 条 + 还有 N 条）、进行中（≤3 条紧凑行），页脚为
+ *    「今天完成 N 件 · 查看工作日志 · 任务看板」
+ *  - 页头精简：品牌 + 副标题 + 今日/任务分段控件；右侧仅通知铃铛（未读数）、
+ *    回顾（技能候选徽标）、设置、新建任务
+ *  - 回顾抽屉：日志 / 复盘 / 经验 / 技能四个 tab（日志 = 工作日志；其余复用复盘面板）
+ *  - 通知中心：铃铛 popover（等你处理 + 最近动态 + 通知记录入口 + 全部已读），
+ *    通知记录弹窗读取 `GET /webhook/log`
+ *  - 任务视图：想法 / 队列 / 进行中 / 已结束 四列看板，一行状态条（计数 + 自动执行 +
+ *    全局搜索）替代统计卡；每列保留漏斗筛选（x/y），无列内搜索框
+ *  - 卡片：身份行 / 两行 Markdown 清洗后的上下文 / 目录·DSH 标签 / 最多三个元信息
+ *    （时间·耗时·模型，tokens 与轮次只在 tooltip 和详情抽屉）
+ *  - 跨列拖拽（想法 ⇄ 队列）、队列内拖拽排序 + Alt+↑↓、详情抽屉、编辑 / 发布弹窗、
+ *    设置（执行 / 桌面提醒 / 消息推送 / 工作日志 / 晨间简报 / 复盘与沉淀 / 数据备份）
+ *  - 轮询（refcount、隐藏页暂停）、错误横幅、toast、系统通知、拖拽 + 键盘排序
  *
  * Single-file plain-JS client plugin for the DSH Web GUI:
  *  - registers a `sidebar.panellist` row (id `secretary`, order 5) and the `main` panel
@@ -79,6 +76,7 @@ window.__ModuleLoader__.load({
     const EVOLUTION_SKILL_STATUSES = ['proposed', 'active', 'disabled']
     const EVOLUTION_STATUSES = ['idle', 'running', 'ok', 'failed']
     const EVOLUTION_TAB_KEYS = ['retrospective', 'lessons', 'skills']
+    const REVIEW_TAB_KEYS = ['journal', 'retrospective', 'lessons', 'skills']
     const MAX_LESSON_LENGTH = 260
     const WEEKDAY_KEYS = ['weekdaySun', 'weekdayMon', 'weekdayTue', 'weekdayWed', 'weekdayThu', 'weekdayFri', 'weekdaySat']
 
@@ -86,7 +84,18 @@ window.__ModuleLoader__.load({
 
     const zh = {
       panelTitle: '任务管家',
-      subtitle: '你交代，我盯着：今日焦点、待你处理、日报与复盘',
+      subtitle: '你交代，我盯着',
+      review: '回顾',
+      reviewSub: '日志、复盘、经验与技能',
+      todayBrief: '今日简报',
+      journalTab: '日志',
+      briefSuggest: '今天建议',
+      briefJoin: '加入队列',
+      briefJoined: '已加入队列「{title}」',
+      todayFooterDone: '今天完成 {count} 件',
+      viewJournal: '查看工作日志',
+      moreItems: '还有 {count} 条',
+      briefYesterdayLog: '查看昨日日志',
 // ---- v0.6: today view / briefs / notifications
       viewToday: '今日',
       viewTasks: '任务',
@@ -101,7 +110,7 @@ window.__ModuleLoader__.load({
       captureSaved: '已记下，稍后在「想法」里安排',
       captureNoCwd: '还没有可用的工作目录，请先在任务看板里选择一个目录。',
       briefCardTitle: '晨间简报',
-      briefView: '查看晨报',
+      briefView: '查看全文',
       briefGenerate: '立即生成',
       briefGenerating: '正在生成晨报…',
       briefNoToday: '今天还没有晨报',
@@ -143,7 +152,6 @@ window.__ModuleLoader__.load({
       ledgerWeek: '本周完成 {count} 件',
       shortcuts: '快捷入口',
       shortcutBoard: '任务看板',
-      shortcutReports: '日报',
       shortcutEvolution: '复盘',
       shortcutLessons: '经验',
       webhookCardTitle: '消息推送',
@@ -206,23 +214,22 @@ window.__ModuleLoader__.load({
       autoStartHint: '队列中的任务按顺序自动执行',
       settings: '设置',
       settingsTitle: '设置',
-      settingsSub: '执行、提醒、推送、日报与复盘设置',
+      settingsSub: '执行、提醒、推送、工作日志与复盘设置',
       publish: '新建任务',
-      dailyReport: '日报',
-      reportsTitle: '工作日报',
-      reportsSub: '每日自动汇总执行中的任务与 DSH 会话',
-      reportsLoading: '正在加载日报…',
-      reportsEmpty: '还没有日报',
-      reportsEmptyHint: '生成今天的工作日报，之后会显示在这里。',
-      reportsSelect: '选择左侧的日报查看内容',
-      reportsContentLoading: '正在加载日报内容…',
-      reportsLoadFailed: '日报列表加载失败',
-      reportsContentFailed: '日报内容加载失败',
+      reportsTitle: '工作日志',
+      reportsSub: '每天汇总真实任务与会话内容',
+      reportsLoading: '正在加载工作日志…',
+      reportsEmpty: '还没有工作日志',
+      reportsEmptyHint: '生成今天的工作日志，之后会显示在这里。',
+      reportsSelect: '选择左侧的工作日志查看内容',
+      reportsContentLoading: '正在加载工作日志内容…',
+      reportsLoadFailed: '工作日志列表加载失败',
+      reportsContentFailed: '工作日志内容加载失败',
       reportGenerate: '立即生成今天',
       reportRegenerating: '重新生成',
       reportGenerating: '生成中…',
-      reportGenerated: '日报已生成',
-      reportGenerateFailed: '日报生成失败',
+      reportGenerated: '工作日志已生成',
+      reportGenerateFailed: '工作日志生成失败',
       reportRefresh: '刷新',
       reportToday: '今天',
       reportStatusIdle: '尚未生成',
@@ -232,20 +239,20 @@ window.__ModuleLoader__.load({
       reportLastStatus: '最近状态',
       reportLastDate: '最近日期',
       reportDir: '输出目录',
-      reportDirHint: '日报 Markdown 会写入这个目录，生成时自动创建。',
+      reportDirHint: '工作日志 Markdown 会写入这个目录，生成时自动创建。',
       reportTime: '执行时间',
       reportTimeHint: '24 小时制 HH:mm（00:00–23:59）',
       reportTimeInvalid: '执行时间必须是 24 小时制 HH:mm（00:00–23:59）',
-      reportEnable: '启用日报',
-      reportEnableHint: '按设定的时间自动生成每日工作日报',
-      reportSettingsTitle: '日报设置',
+      reportEnable: '启用工作日志',
+      reportEnableHint: '按设定的时间自动生成每日工作日志',
+      reportSettingsTitle: '工作日志设置',
       reportSettingsSub: '定时生成与输出目录',
       reportGenerateNow: '立即生成',
       reportError: '最近错误',
-      reportNoSelection: '请选择一份日报',
+      reportNoSelection: '请选择一份工作日志',
       reportBytes: '{size}',
       reportDate: '日期',
-      reportSaved: '日报设置已保存',
+      reportSaved: '工作日志设置已保存',
       kpiPending: '队列',
       kpiRunning: '执行中',
       kpiDone: '已完成',
@@ -442,7 +449,7 @@ window.__ModuleLoader__.load({
       emptyCtaBatch: '批量创建',
       crashTitle: '任务管家面板出错了',
       crashHint: '切换页面或刷新后重试；如果问题持续出现，请把控制台里的错误信息反馈给插件作者。',
-      searchPlaceholder: '搜索任务…',
+      searchPlaceholder: '搜索全部任务…',
       searchClear: '清除搜索',
       showSessions: 'DSH 会话',
       unknownError: '未知错误',
@@ -481,13 +488,13 @@ window.__ModuleLoader__.load({
       settingsExecutionSub: '并发、默认模型与自动执行',
       settingsSectionNotify: '桌面提醒',
       settingsNotifySub: '任务跑完时的提醒方式',
-      settingsSectionReport: '日报',
+      settingsSectionReport: '工作日志',
       settingsReportSub: '定时生成与输出目录',
       settingsDone: '完成',
       settingsAutoSave: '修改会立即保存',
       settingsSectionBackup: '数据备份',
       settingsSectionWebhook: '消息推送',
-      webhookSub: '任务、日报与晨报的关键进展推送到 Webhook（Markdown）',
+      webhookSub: '任务、工作日志与晨报的关键进展推送到 Webhook（Markdown）',
       webhookEnableLabel: '启用消息推送',
       webhookEnableHint: '开启后按选择的事件推送；关闭时可先填写配置并发送测试',
       webhookUrl: 'Webhook 地址',
@@ -506,7 +513,7 @@ window.__ModuleLoader__.load({
       webhookEventSucceeded: '执行成功',
       webhookEventBlocked: '任务等你回复',
       webhookEventFailed: '任务失败',
-      webhookEventDailyReport: '日报生成',
+      webhookEventDailyReport: '工作日志生成',
       webhookEventRetrospective: '复盘生成',
       webhookEventTest: '测试通知',
       webhookTest: '发送测试通知',
@@ -541,8 +548,6 @@ window.__ModuleLoader__.load({
       publishIdeaSuccessOne: '已放入想法 1 个任务',
 
       /* v6: per-column search/filter + 24h time + uniform card zones */
-      columnSearchPlaceholder: '搜索本列…',
-      columnSearchClear: '清除本列搜索',
       columnFilterLabel: '筛选{column}',
       filterStatus: '状态',
       filterPriority: '优先级',
@@ -707,7 +712,18 @@ window.__ModuleLoader__.load({
 
     const en = {
       panelTitle: 'Task Butler',
-      subtitle: 'You delegate; I keep watch — focus, needs-you, reports and retrospectives',
+      subtitle: 'You delegate; I keep watch',
+      review: 'Review',
+      reviewSub: 'Work logs, retrospectives, lessons and skills',
+      todayBrief: 'Today’s brief',
+      journalTab: 'Journal',
+      briefSuggest: 'Today’s suggestions',
+      briefJoin: 'Add to queue',
+      briefJoined: 'Added “{title}” to the queue',
+      todayFooterDone: '{count} done today',
+      viewJournal: 'View work log',
+      moreItems: '{count} more',
+      briefYesterdayLog: 'View yesterday’s log',
 // ---- v0.6: today view / briefs / notifications
       viewToday: 'Today',
       viewTasks: 'Tasks',
@@ -722,7 +738,7 @@ window.__ModuleLoader__.load({
       captureSaved: 'Saved to Ideas',
       captureNoCwd: 'No workspace folder yet — pick one on the task board first.',
       briefCardTitle: 'Morning brief',
-      briefView: 'View brief',
+      briefView: 'View full text',
       briefGenerate: 'Generate now',
       briefGenerating: 'Generating brief…',
       briefNoToday: 'No brief yet today',
@@ -764,7 +780,6 @@ window.__ModuleLoader__.load({
       ledgerWeek: '{count} done this week',
       shortcuts: 'Shortcuts',
       shortcutBoard: 'Task board',
-      shortcutReports: 'Daily report',
       shortcutEvolution: 'Retrospectives',
       shortcutLessons: 'Lessons',
       webhookCardTitle: 'Push notifications',
@@ -827,23 +842,22 @@ window.__ModuleLoader__.load({
       autoStartHint: 'Queued tasks start automatically in order',
       settings: 'Settings',
       settingsTitle: 'Settings',
-      settingsSub: 'Execution, alerts, push, reports and retrospectives',
+      settingsSub: 'Execution, alerts, push, work logs and retrospectives',
       publish: 'New task',
-      dailyReport: 'Daily report',
-      reportsTitle: 'Work report',
-      reportsSub: 'Daily AI digest of tasks and DSH sessions',
-      reportsLoading: 'Loading reports…',
-      reportsEmpty: 'No reports yet',
-      reportsEmptyHint: 'Generate today’s report and it will appear here.',
-      reportsSelect: 'Choose a report on the left',
-      reportsContentLoading: 'Loading report…',
-      reportsLoadFailed: 'Loading reports failed',
-      reportsContentFailed: 'Loading the report content failed',
+      reportsTitle: 'Work log',
+      reportsSub: 'A daily digest of real task and session work',
+      reportsLoading: 'Loading work logs…',
+      reportsEmpty: 'No work logs yet',
+      reportsEmptyHint: 'Generate today’s work log and it will appear here.',
+      reportsSelect: 'Choose a work log on the left',
+      reportsContentLoading: 'Loading work log…',
+      reportsLoadFailed: 'Loading work logs failed',
+      reportsContentFailed: 'Loading the work log failed',
       reportGenerate: 'Generate today',
       reportRegenerating: 'Regenerate',
       reportGenerating: 'Generating…',
-      reportGenerated: 'Report generated',
-      reportGenerateFailed: 'Generating the report failed',
+      reportGenerated: 'Work log generated',
+      reportGenerateFailed: 'Generating the work log failed',
       reportRefresh: 'Refresh',
       reportToday: 'Today',
       reportStatusIdle: 'Not generated',
@@ -853,20 +867,20 @@ window.__ModuleLoader__.load({
       reportLastStatus: 'Last status',
       reportLastDate: 'Last date',
       reportDir: 'Output directory',
-      reportDirHint: 'The report Markdown file is written here; the folder is created on demand.',
+      reportDirHint: 'The work log Markdown file is written here; the folder is created on demand.',
       reportTime: 'Run at',
       reportTimeHint: '24-hour clock, HH:mm (00:00–23:59)',
       reportTimeInvalid: 'The run time must use 24-hour HH:mm (00:00–23:59)',
-      reportEnable: 'Daily reports',
-      reportEnableHint: 'Generate a work report automatically at the configured time',
-      reportSettingsTitle: 'Daily report settings',
+      reportEnable: 'Work log',
+      reportEnableHint: 'Generate a work log automatically at the configured time',
+      reportSettingsTitle: 'Work log settings',
       reportSettingsSub: 'Schedule and output directory',
       reportGenerateNow: 'Generate now',
       reportError: 'Last error',
-      reportNoSelection: 'Select a report',
+      reportNoSelection: 'Select a work log',
       reportBytes: '{size}',
       reportDate: 'Date',
-      reportSaved: 'Report settings saved',
+      reportSaved: 'Work log settings saved',
       kpiPending: 'Queue',
       kpiRunning: 'Running',
       kpiDone: 'Done',
@@ -1063,7 +1077,7 @@ window.__ModuleLoader__.load({
       emptyCtaBatch: 'Batch create',
       crashTitle: 'The Task Butler panel hit an error',
       crashHint: 'Switch pages or reload and try again. If it keeps happening, report the console error to the plugin author.',
-      searchPlaceholder: 'Search tasks…',
+      searchPlaceholder: 'Search all tasks…',
       searchClear: 'Clear search',
       showSessions: 'DSH sessions',
       unknownError: 'Unknown error',
@@ -1102,13 +1116,13 @@ window.__ModuleLoader__.load({
       settingsExecutionSub: 'Concurrency, default model and auto-run',
       settingsSectionNotify: 'Desktop alerts',
       settingsNotifySub: 'How to be notified when tasks finish',
-      settingsSectionReport: 'Daily report',
+      settingsSectionReport: 'Work log',
       settingsReportSub: 'Schedule and output directory',
       settingsDone: 'Done',
       settingsAutoSave: 'Changes save immediately',
       settingsSectionBackup: 'Data backups',
       settingsSectionWebhook: 'Push notifications',
-      webhookSub: 'Key task, report and brief updates pushed to your webhook (Markdown)',
+      webhookSub: 'Key task, work-log and brief updates pushed to your webhook (Markdown)',
       webhookEnableLabel: 'Enable push notifications',
       webhookEnableHint: 'Notifications are only pushed while on; you can configure and send a test while off',
       webhookUrl: 'Webhook URL',
@@ -1127,7 +1141,7 @@ window.__ModuleLoader__.load({
       webhookEventSucceeded: 'Task succeeded',
       webhookEventBlocked: 'Task waiting for you',
       webhookEventFailed: 'Task failed',
-      webhookEventDailyReport: 'Daily report generated',
+      webhookEventDailyReport: 'Work log generated',
       webhookEventRetrospective: 'Retrospective generated',
       webhookEventTest: 'Test notification',
       webhookTest: 'Send test notification',
@@ -1162,8 +1176,6 @@ window.__ModuleLoader__.load({
       publishIdeaSuccessOne: 'Saved 1 idea',
 
       /* v6: per-column search/filter + 24h time + uniform card zones */
-      columnSearchPlaceholder: 'Search this column…',
-      columnSearchClear: 'Clear column search',
       columnFilterLabel: 'Filter {column}',
       filterStatus: 'Status',
       filterPriority: 'Priority',
@@ -1336,14 +1348,12 @@ window.__ModuleLoader__.load({
       '.dsh-ps-page::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--dsw-alias-label-primary) 12%,transparent);border:3px solid transparent;border-radius:999px;background-clip:padding-box}',
       '.dsh-ps-page-inner{display:flex;flex-direction:column;gap:18px;width:100%;max-width:1440px;margin:0 auto}',
       '.dsh-ps-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}',
-      '.dsh-ps-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;flex-wrap:wrap;padding:2px 0}',
-      '.dsh-ps-header-main{display:flex;flex-direction:column;gap:8px;min-width:0}',
+      '.dsh-ps-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:nowrap;padding:2px 0}',
+      '.dsh-ps-header-main{display:flex;flex-direction:column;gap:5px;min-width:0;flex:0 1 auto}',
       '.dsh-ps-title-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-width:0}',
-      '.dsh-ps-title{margin:0;font-size:26px;font-weight:700;line-height:1.2;letter-spacing:-.02em}',
+      '.dsh-ps-title{margin:0;font-size:24px;font-weight:700;line-height:1.2;letter-spacing:-.02em;white-space:nowrap}',
       '.dsh-ps-subtitle{margin:0;font-size:13px;line-height:19px;color:var(--dsw-alias-label-secondary)}',
-      '.dsh-ps-runpill{display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 13px;border:1px solid color-mix(in srgb,var(--ps-violet-soft) 24%,var(--dsw-alias-border-l1));border-radius:999px;background:color-mix(in srgb,var(--ps-violet) 10%,var(--dsw-alias-bg-layer-1));color:color-mix(in srgb,var(--ps-violet-deep) 62%,var(--dsw-alias-label-primary));font-size:12px;line-height:1;font-variant-numeric:tabular-nums;white-space:nowrap;box-shadow:0 1px 2px color-mix(in srgb,var(--dsw-alias-label-primary) 4%,transparent)}',
-      '.dsh-ps-runpill strong{color:inherit;font-weight:700}',
-      '.dsh-ps-header-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-left:auto;padding-top:4px}',
+      '.dsh-ps-header-actions{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;margin-left:auto;padding-top:0}',
       '.dsh-ps-switch-row{display:inline-flex;align-items:center;gap:9px;height:38px;font-size:13px;font-weight:500;color:var(--dsw-alias-label-secondary);white-space:nowrap}',
       '.dsh-ps-switch{position:relative;flex:none;box-sizing:border-box;width:42px;height:24px;padding:0;border:1px solid color-mix(in srgb,var(--dsw-alias-label-primary) 10%,transparent);border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 12%,var(--dsw-alias-bg-layer-1));cursor:pointer;transition:background-color 200ms ease-out,border-color 200ms ease-out,opacity 200ms ease-out}',
       '.dsh-ps-switch[aria-checked="true"]{background:linear-gradient(135deg,var(--ps-violet),var(--ps-indigo));border-color:transparent;box-shadow:0 4px 12px -6px color-mix(in srgb,var(--ps-violet) 55%,transparent)}',
@@ -1363,7 +1373,7 @@ window.__ModuleLoader__.load({
       '.dsh-ps-btn-ghost:hover:not(:disabled){background:color-mix(in srgb,var(--dsw-alias-label-primary) 6%,transparent);border-color:transparent;color:var(--dsw-alias-label-primary);box-shadow:none;transform:none}',
       '.dsh-ps-btn-danger{color:var(--ps-rose);border-color:color-mix(in srgb,var(--ps-rose) 24%,var(--dsw-alias-border-l1));background:color-mix(in srgb,var(--ps-rose) 8%,var(--dsw-alias-bg-layer-1))}',
       '.dsh-ps-btn-danger:hover:not(:disabled){background:color-mix(in srgb,var(--ps-rose) 13%,var(--dsw-alias-bg-layer-1));border-color:color-mix(in srgb,var(--ps-rose) 40%,var(--dsw-alias-border-l1))}',
-      '.dsh-ps-btn-sm{height:30px;padding:0 12px;font-size:12px;border-radius:10px}',
+      '.dsh-ps-btn-sm{height:30px;padding:0 12px;font-size:12.5px;border-radius:10px}',
       '.dsh-ps-btn-icon{width:38px;padding:0}',
       '.dsh-ps-spinner{display:inline-block;flex:none;width:14px;height:14px;border:2px solid color-mix(in srgb,var(--dsw-alias-label-secondary) 22%,transparent);border-top-color:color-mix(in srgb,var(--ps-violet) 75%,var(--dsw-alias-label-primary));border-radius:50%;animation:dsh-ps-spin 720ms linear infinite}',
       '.dsh-ps-banner{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--ps-rose) 20%,var(--dsw-alias-border-l1));border-radius:16px;background:color-mix(in srgb,var(--ps-rose) 8%,var(--dsw-alias-bg-layer-1));color:color-mix(in srgb,var(--ps-rose) 62%,var(--dsw-alias-label-primary));font-size:13px;line-height:19px;box-shadow:0 10px 24px -20px color-mix(in srgb,var(--ps-rose) 45%,transparent);animation:dsh-ps-fade-in 200ms ease-out}',
@@ -1372,7 +1382,6 @@ window.__ModuleLoader__.load({
       '.dsh-ps-banner-dismiss{display:inline-flex;align-items:center;justify-content:center;flex:none;width:22px;height:22px;padding:0;border:0;border-radius:7px;background:transparent;color:inherit;cursor:pointer}',
       '.dsh-ps-banner-dismiss:hover{background:color-mix(in srgb,var(--ps-rose) 14%,transparent)}',
       '.dsh-ps-banner-dismiss:focus-visible{outline:2px solid color-mix(in srgb,var(--ps-rose) 60%,transparent);outline-offset:1px}',
-      '.dsh-ps-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}',
       '.dsh-ps-kpi[data-tone="idea"]{--ps-tone:var(--ps-violet-soft)}',
       '.dsh-ps-kpi[data-tone="pending"]{--ps-tone:var(--ps-blue)}',
       '.dsh-ps-kpi[data-tone="processing"]{--ps-tone:var(--ps-violet)}',
@@ -1486,29 +1495,16 @@ window.__ModuleLoader__.load({
       '.dsh-ps-col-dot[data-status="claimed"]{background:var(--ps-violet)}',
       '.dsh-ps-col-dot[data-status="done"]{background:var(--ps-mint)}',
       '.dsh-ps-column-title{margin:0;font-size:14px;font-weight:600;line-height:19px;letter-spacing:-.01em;white-space:nowrap}',
-      '.dsh-ps-column-count{display:inline-flex;align-items:center;justify-content:center;flex:none;min-width:22px;height:21px;padding:0 8px;border-radius:999px;background:color-mix(in srgb,var(--ps-col) 12%,var(--dsw-alias-bg-layer-1));color:color-mix(in srgb,var(--ps-col) 52%,var(--dsw-alias-label-primary));font-size:11px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}',
+      '.dsh-ps-column-count{display:inline-flex;align-items:center;justify-content:center;flex:none;min-width:24px;height:23px;padding:0 8px;border-radius:999px;background:color-mix(in srgb,var(--ps-col) 12%,var(--dsw-alias-bg-layer-1));color:color-mix(in srgb,var(--ps-col) 52%,var(--dsw-alias-label-primary));font-size:12.5px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}',
       '.dsh-ps-column-count[data-filtered="true"]{background:color-mix(in srgb,var(--ps-col) 20%,var(--dsw-alias-bg-layer-1));color:color-mix(in srgb,var(--ps-col) 48%,var(--dsw-alias-label-primary))}',
       '.dsh-ps-column-grow{flex:1;min-width:0}',
-      '.dsh-ps-column-hint{min-width:0;font-size:11px;line-height:14px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+      '.dsh-ps-column-hint{min-width:0;font-size:12.5px;line-height:17px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '.dsh-ps-column-tools{display:flex;align-items:center;gap:8px;min-width:0}',
-      '.dsh-ps-column-body{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:120px;max-height:max(300px,calc(100vh - 412px));overflow-y:auto;overflow-x:hidden;padding:0 1px 4px;scrollbar-gutter:stable}',
-      '.dsh-ps-column-body::-webkit-scrollbar{width:8px}',
-      '.dsh-ps-column-body::-webkit-scrollbar-track{background:transparent}',
-      '.dsh-ps-column-body::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--dsw-alias-label-primary) 10%,transparent);border:2px solid transparent;border-radius:999px;background-clip:padding-box}',
+      '.dsh-ps-column-body{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0;padding:0 1px 4px}',
       '.dsh-ps-column-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;padding:30px 16px;border:1px dashed var(--dsw-alias-border-l2);border-radius:20px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 1.5%,transparent);text-align:center;color:var(--dsw-alias-label-secondary)}',
       '.dsh-ps-column-empty-icon{color:color-mix(in srgb,var(--ps-violet) 40%,var(--dsw-alias-label-secondary));opacity:.9}',
       '.dsh-ps-column-empty-title{margin:0;font-size:12.5px;font-weight:600;line-height:17px;color:var(--dsw-alias-label-primary)}',
-      '.dsh-ps-column-empty-hint{margin:0;font-size:11.5px;line-height:16px}',
-      '.dsh-ps-col-search{position:relative;display:flex;align-items:center;flex:1;min-width:0}',
-      '.dsh-ps-col-search-icon{position:absolute;left:11px;display:inline-flex;color:var(--dsw-alias-label-secondary);pointer-events:none}',
-      '.dsh-ps-col-search .dsh-ps-input{height:36px;padding:0 30px 0 32px;font-size:12.5px;line-height:34px;border-radius:999px;border-color:transparent;background:color-mix(in srgb,var(--dsw-alias-label-primary) 4%,var(--dsw-alias-bg-layer-1));box-shadow:none;transition:border-color 200ms ease-out,box-shadow 200ms ease-out,background-color 200ms ease-out}',
-      '.dsh-ps-col-search .dsh-ps-input:hover:not(:disabled){background:color-mix(in srgb,var(--dsw-alias-label-primary) 5%,var(--dsw-alias-bg-layer-1))}',
-      '.dsh-ps-col-search .dsh-ps-input:focus-visible{border-color:color-mix(in srgb,var(--ps-col) 38%,transparent);box-shadow:0 0 0 4px color-mix(in srgb,var(--ps-col) 12%,transparent);background:var(--dsw-alias-bg-layer-1)}',
-      '.dsh-ps-col-search .dsh-ps-input::-webkit-search-cancel-button,.dsh-ps-col-search .dsh-ps-input::-webkit-search-decoration{-webkit-appearance:none;appearance:none}',
-      '.dsh-ps-col-search-input{padding-right:30px}',
-      '.dsh-ps-col-search-clear{position:absolute;right:6px;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;transition:background-color 200ms ease-out,color 200ms ease-out}',
-      '.dsh-ps-col-search-clear:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary) 8%,transparent);color:var(--dsw-alias-label-primary)}',
-      '.dsh-ps-col-search-clear:focus-visible{outline:2px solid color-mix(in srgb,var(--ps-violet) 55%,transparent);outline-offset:1px}',
+      '.dsh-ps-column-empty-hint{margin:0;font-size:12.5px;line-height:17px}',
       '.dsh-ps-funnel{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:none;box-sizing:border-box;width:36px;height:36px;padding:0;border:1px solid var(--dsw-alias-border-l1);border-radius:50%;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);cursor:pointer;box-shadow:0 1px 2px color-mix(in srgb,var(--dsw-alias-label-primary) 4%,transparent);transition:background-color 200ms ease-out,border-color 200ms ease-out,color 200ms ease-out,transform 200ms ease-out}',
       '.dsh-ps-funnel:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l2);transform:translateY(-1px)}',
       '.dsh-ps-funnel:focus-visible{outline:2px solid color-mix(in srgb,var(--ps-violet) 55%,transparent);outline-offset:2px}',
@@ -1568,25 +1564,26 @@ window.__ModuleLoader__.load({
       '.dsh-ps-card-meta{display:flex;align-items:center;gap:5px;min-width:0;max-width:100%;overflow:hidden;white-space:nowrap;font-variant-numeric:tabular-nums}',
       '.dsh-ps-card-meta-primary{height:21px}',
       '.dsh-ps-card-meta-secondary{height:20px}',
-      '.dsh-ps-card-meta-item{display:inline-flex;align-items:center;gap:4px;flex:none;box-sizing:border-box;height:21px;padding:0 9px;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 5%,transparent);color:var(--dsw-alias-label-secondary);font-size:10.5px;font-weight:500;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}',
-      '.dsh-ps-card-meta-secondary .dsh-ps-card-meta-item{height:20px;font-size:10px;padding:0 8px}',
+      '.dsh-ps-card-meta-item{display:inline-flex;align-items:center;gap:4px;flex:none;box-sizing:border-box;height:24px;padding:0 8px;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 5%,transparent);color:var(--dsw-alias-label-secondary);font-size:12.5px;font-weight:500;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}',
+      '.dsh-ps-card-meta-secondary .dsh-ps-card-meta-item{height:24px;font-size:12.5px;padding:0 8px}',
+      '.dsh-ps-card-meta-secondary .dsh-ps-card-meta-item[data-meta="model"]{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}',
       '.dsh-ps-card-meta-item[data-meta="group"]{background:color-mix(in srgb,var(--ps-violet) 10%,transparent);color:color-mix(in srgb,var(--ps-violet-deep) 58%,var(--dsw-alias-label-primary))}',
       '.dsh-ps-card-meta-item[data-meta="folder"]{background:color-mix(in srgb,var(--dsw-alias-label-primary) 5%,transparent)}',
       '.dsh-ps-card-meta-item[data-meta="model"]{background:color-mix(in srgb,var(--ps-blue) 10%,transparent);color:color-mix(in srgb,var(--ps-blue) 52%,var(--dsw-alias-label-primary))}',
       '.dsh-ps-card-meta-icon{vertical-align:-2px;margin-right:0;opacity:.7}',
       '.dsh-ps-card-meta-sep{display:none}',
       '.dsh-ps-card-meta-live{color:color-mix(in srgb,var(--ps-violet-deep) 62%,var(--dsw-alias-label-primary));font-weight:600}',
-      '.dsh-ps-card-tag{display:inline-flex;align-items:center;gap:3px;flex:none;box-sizing:border-box;height:21px;padding:0 9px;border:0;border-radius:999px;background:color-mix(in srgb,var(--ps-blue) 9%,transparent);color:color-mix(in srgb,var(--ps-blue) 48%,var(--dsw-alias-label-primary));font-size:10px;font-weight:600;line-height:1;white-space:nowrap}',
+      '.dsh-ps-card-tag{display:inline-flex;align-items:center;gap:3px;flex:none;box-sizing:border-box;height:24px;padding:0 8px;border:0;border-radius:999px;background:color-mix(in srgb,var(--ps-blue) 9%,transparent);color:color-mix(in srgb,var(--ps-blue) 48%,var(--dsw-alias-label-primary));font-size:12.5px;font-weight:600;line-height:1;white-space:nowrap}',
       '.dsh-ps-card-session{display:inline-flex;flex:none;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:color-mix(in srgb,var(--ps-blue) 10%,transparent);color:color-mix(in srgb,var(--ps-blue) 52%,var(--dsw-alias-label-primary))}',
-      '.dsh-ps-card-live{display:inline-flex;align-items:center;gap:5px;color:var(--dsw-alias-label-secondary);font-size:11.5px;line-height:16px;font-variant-numeric:tabular-nums}',
+      '.dsh-ps-card-live{display:inline-flex;align-items:center;gap:5px;color:var(--dsw-alias-label-secondary);font-size:12.5px;line-height:17px;font-variant-numeric:tabular-nums}',
       '.dsh-ps-priority{display:inline-flex;align-items:center;justify-content:center;flex:none;width:16px;height:20px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);line-height:1}',
       '.dsh-ps-priority[data-priority="urgent"]{color:color-mix(in srgb,var(--ps-rose) 70%,var(--dsw-alias-label-primary))}',
       '.dsh-ps-priority[data-priority="high"]{color:color-mix(in srgb,var(--ps-amber) 72%,var(--dsw-alias-label-primary))}',
       '.dsh-ps-priority[data-priority="normal"]{color:var(--dsw-alias-label-secondary);opacity:.75}',
       '.dsh-ps-priority[data-priority="low"]{color:var(--dsw-alias-label-secondary);opacity:.42}',
       '.dsh-ps-drawer-badges .dsh-ps-priority,.dsh-ps-drawer-badges .dsh-ps-chip{display:inline-flex;align-items:center;gap:4px;width:auto;height:22px;padding:0 9px;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 5%,transparent);color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:600;line-height:1;white-space:nowrap;opacity:1}',
-      '.dsh-ps-badge{display:inline-flex;align-items:center;height:22px;padding:0 9px;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 6%,transparent);color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:600;line-height:1;white-space:nowrap}',
-      '.dsh-ps-card-status{flex:none;align-self:flex-start;height:22px;margin-top:1px;padding:0 9px;border-radius:999px;font-size:11px;letter-spacing:.01em}',
+      '.dsh-ps-badge{display:inline-flex;align-items:center;height:24px;padding:0 9px;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 6%,transparent);color:var(--dsw-alias-label-secondary);font-size:12.5px;font-weight:600;line-height:1;white-space:nowrap}',
+      '.dsh-ps-card-status{flex:none;align-self:flex-start;height:24px;margin-top:0;padding:0 9px;border-radius:999px;font-size:12.5px;letter-spacing:.01em}',
       '.dsh-ps-badge[data-status="running"]{background:color-mix(in srgb,var(--ps-violet) 13%,transparent);color:color-mix(in srgb,var(--ps-violet-deep) 65%,var(--dsw-alias-label-primary))}',
       '.dsh-ps-badge[data-status="paused"]{background:color-mix(in srgb,var(--ps-amber) 15%,transparent);color:color-mix(in srgb,var(--ps-amber) 55%,var(--dsw-alias-label-primary))}',
       '.dsh-ps-badge[data-status="blocked"]{background:color-mix(in srgb,var(--ps-amber) 17%,transparent);color:color-mix(in srgb,var(--ps-amber) 52%,var(--dsw-alias-label-primary))}',
@@ -1831,12 +1828,10 @@ window.__ModuleLoader__.load({
       '@keyframes dsh-ps-slide-in{from{transform:translateX(26px);opacity:.6}to{transform:none;opacity:1}}',
       '@keyframes dsh-ps-dialog-in{from{transform:translateY(10px) scale(.99);opacity:.6}to{transform:none;opacity:1}}',
       '@keyframes dsh-ps-toast-in{from{transform:translateX(14px);opacity:0}to{transform:none;opacity:1}}',
-      '@media (max-width: 1000px){.dsh-ps-stats{grid-template-columns:repeat(3,minmax(0,1fr))}}',
-      '@media (max-width: 1320px){.dsh-ps-board{grid-template-columns:repeat(2,minmax(0,1fr))}}',
-      '@media (max-width: 780px){.dsh-ps-board{grid-template-columns:minmax(0,1fr)}.dsh-ps-column-body{max-height:none}}',
-      '@media (max-width: 720px){.dsh-ps-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.dsh-ps-report-body{flex-direction:column}.dsh-ps-report-list{width:100%;max-height:180px;flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--dsw-alias-border-l1)}.dsh-ps-report-item{width:auto;min-width:150px}}',
-      '@media (max-width: 480px){.dsh-ps-stats{grid-template-columns:minmax(0,1fr)}}',
-      '@media (max-width: 640px){.dsh-ps-page{padding-left:16px;padding-right:16px;padding-bottom:34px}.dsh-ps-title{font-size:23px}.dsh-ps-header-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;margin-left:0;gap:8px}.dsh-ps-header-actions .dsh-ps-btn{width:100%}.dsh-ps-header-actions .dsh-ps-switch-row{grid-column:1/-1}.dsh-ps-header-actions .dsh-ps-btn-primary{grid-column:1/-1}.dsh-ps-stats{gap:10px}.dsh-ps-column-hint{display:none}.dsh-ps-meta-grid{grid-template-columns:minmax(0,1fr)}.dsh-ps-dialog-layer{padding:12px}.dsh-ps-dialog-head{padding:18px 18px 10px}.dsh-ps-dialog-body{padding:4px 18px 8px}.dsh-ps-dialog-foot{padding:14px 18px 18px}.dsh-ps-drawer-body{padding:16px 18px 20px}.dsh-ps-composer{padding:12px 18px 16px}.dsh-ps-two-col{grid-template-columns:minmax(0,1fr)}.dsh-ps-settings-grid{grid-template-columns:minmax(0,1fr)}}',
+      '@media (max-width: 1180px){.dsh-ps-board{grid-template-columns:repeat(2,minmax(0,1fr))}}',
+      '@media (max-width: 820px){.dsh-ps-board{grid-template-columns:minmax(0,1fr)}}',
+      '@media (max-width: 720px){.dsh-ps-report-body{flex-direction:column}.dsh-ps-report-list{width:100%;max-height:180px;flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--dsw-alias-border-l1)}.dsh-ps-report-item{width:auto;min-width:150px}}',
+      '@media (max-width: 640px){.dsh-ps-page{padding-left:14px;padding-right:14px;padding-bottom:30px}.dsh-ps-title{font-size:19px}.dsh-ps-header{gap:6px}.dsh-ps-header-actions{gap:5px}.dsh-ps-view-btn{height:26px;padding:0 9px;font-size:12px}.dsh-ps-column-hint{display:none}.dsh-ps-meta-grid{grid-template-columns:minmax(0,1fr)}.dsh-ps-dialog-layer{padding:12px}.dsh-ps-dialog-head{padding:18px 18px 10px}.dsh-ps-dialog-body{padding:4px 18px 8px}.dsh-ps-dialog-foot{padding:14px 18px 18px}.dsh-ps-drawer-body{padding:16px 18px 20px}.dsh-ps-composer{padding:12px 18px 16px}.dsh-ps-two-col{grid-template-columns:minmax(0,1fr)}.dsh-ps-settings-grid{grid-template-columns:minmax(0,1fr)}}',
       '@media (pointer: coarse){.dsh-ps-card-actions{opacity:1;transform:none;pointer-events:auto}.dsh-ps-grip{opacity:.9}}',
       '@media (prefers-reduced-motion: reduce){.dsh-ps-card,.dsh-ps-card::before,.dsh-ps-btn,.dsh-ps-switch,.dsh-ps-switch-thumb,.dsh-ps-segment,.dsh-ps-dropzone,.dsh-ps-card-actions,.dsh-ps-kpi,.dsh-ps-funnel,.dsh-ps-col-filter-option,.dsh-ps-col-search-clear,.dsh-ps-col-filter-clear,.dsh-ps-report-item,.dsh-ps-backup-refresh,.dsh-ps-toast-close{transition:none}.dsh-ps-spinner,.dsh-ps-dot[data-status="running"]::after,.dsh-ps-card-progress-fill,.dsh-ps-kpi-pulse::after,.dsh-ps-kpi-bar[data-active="true"] .dsh-ps-kpi-bar-fill,.dsh-ps-drawer,.dsh-ps-dialog,.dsh-ps-toast,.dsh-ps-drawer-mask,.dsh-ps-dialog-mask,.dsh-ps-banner,.dsh-ps-settings,.dsh-ps-col-popover,.dsh-ps-toast-stack{animation:none}.dsh-ps-card:hover,.dsh-ps-kpi:hover,.dsh-ps-funnel:hover:not(:disabled),.dsh-ps-btn-primary:hover:not(:disabled),.dsh-ps-btn:hover:not(:disabled){transform:none}}',
       '@media (prefers-reduced-motion: reduce){.dsh-ps-card::before{transition:none}}',
@@ -1844,7 +1839,7 @@ window.__ModuleLoader__.load({
       '@media (max-width: 640px){.dsh-ps-evo-form-grid{grid-template-columns:minmax(0,1fr)}.dsh-ps-evo-head-actions{width:100%;justify-content:flex-start;margin-left:0}.dsh-ps-evo-tabs{padding-left:12px;padding-right:12px}.dsh-ps-evo-tab{padding:0 11px}.dsh-ps-evo-scroll,.dsh-ps-evo-content-wrap{padding-left:14px;padding-right:14px}}',
       '@media (prefers-reduced-motion: reduce){.dsh-ps-evo-tab,.dsh-ps-evo-item,.dsh-ps-evo-card,.dsh-ps-evo-entry-badge{transition:none}.dsh-ps-evo-panel,.dsh-ps-evo-card{animation:none}.dsh-ps-evo-tab:hover{background:transparent}}',
       // ---- v0.6: view shell / today workbench / notifications -----------------
-      '.dsh-ps-header-mid{display:flex;align-items:center;gap:10px;padding-top:3px;min-width:0}',
+      '.dsh-ps-header-mid{display:flex;align-items:center;gap:8px;padding-top:0;min-width:0;flex:none}',
       '.dsh-ps-views{display:inline-flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 4%,var(--dsw-alias-bg-layer-1))}',
       '.dsh-ps-view-btn{display:inline-flex;align-items:center;justify-content:center;height:30px;padding:0 14px;border:0;border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12.5px;font-weight:600;line-height:1;white-space:nowrap;cursor:pointer;transition:background-color 200ms ease-out,color 200ms ease-out,box-shadow 200ms ease-out}',
       '.dsh-ps-view-btn:hover:not([aria-selected="true"]){color:var(--dsw-alias-label-primary);background:color-mix(in srgb,var(--dsw-alias-label-primary) 6%,transparent)}',
@@ -1874,17 +1869,17 @@ window.__ModuleLoader__.load({
       '.dsh-ps-today-side{display:flex;flex-direction:column;gap:14px;min-width:0}',
       '.dsh-ps-greet{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:2px 2px 0}',
       '.dsh-ps-greet-main{display:flex;flex-direction:column;gap:4px;min-width:0}',
-      '.dsh-ps-greet-date{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;line-height:17px;color:color-mix(in srgb,var(--ps-violet-deep) 60%,var(--dsw-alias-label-secondary));font-variant-numeric:tabular-nums}',
+      '.dsh-ps-greet-date{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;line-height:17px;color:color-mix(in srgb,var(--ps-violet-deep) 60%,var(--dsw-alias-label-secondary));font-variant-numeric:tabular-nums}',
       '.dsh-ps-greet-line{margin:0;font-size:17px;font-weight:600;line-height:25px;letter-spacing:-.015em;overflow-wrap:anywhere}',
       '.dsh-ps-watch{display:flex;align-items:center;gap:12px;padding:10px 14px;border:1px solid color-mix(in srgb,var(--ps-violet) 18%,var(--dsw-alias-border-l1));border-radius:16px;background:color-mix(in srgb,var(--ps-violet) 6%,var(--dsw-alias-bg-layer-1));box-shadow:0 1px 2px color-mix(in srgb,var(--dsw-alias-label-primary) 5%,transparent)}',
       '.dsh-ps-watch-label{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;white-space:nowrap;color:color-mix(in srgb,var(--ps-violet-deep) 62%,var(--dsw-alias-label-primary))}',
       '.dsh-ps-watch-metrics{display:flex;align-items:center;gap:10px;font-size:11.5px;line-height:17px;color:var(--dsw-alias-label-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}',
-      '.dsh-ps-capture{display:flex;align-items:center;gap:10px;min-width:0;padding:9px 9px 9px 14px;border:1px solid var(--dsw-alias-border-l1);border-radius:18px;background:var(--dsw-alias-bg-layer-1);box-shadow:0 1px 2px color-mix(in srgb,var(--dsw-alias-label-primary) 6%,transparent),0 18px 40px -32px color-mix(in srgb,var(--ps-violet) 40%,transparent);transition:border-color 200ms ease-out,box-shadow 200ms ease-out}',
+      '.dsh-ps-capture{display:flex;align-items:center;gap:8px;min-width:0;height:42px;padding:0 4px 0 13px;border:1px solid var(--dsw-alias-border-l1);border-radius:14px;background:var(--dsw-alias-bg-layer-1);box-shadow:0 1px 2px color-mix(in srgb,var(--dsw-alias-label-primary) 6%,transparent);transition:border-color 200ms ease-out,box-shadow 200ms ease-out}',
       '.dsh-ps-capture:focus-within{border-color:color-mix(in srgb,var(--ps-violet) 38%,var(--dsw-alias-border-l1));box-shadow:0 0 0 4px color-mix(in srgb,var(--ps-violet) 10%,transparent)}',
       '.dsh-ps-capture-icon{flex:none;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:11px;background:color-mix(in srgb,var(--ps-violet) 10%,transparent);color:color-mix(in srgb,var(--ps-violet-deep) 62%,var(--dsw-alias-label-primary))}',
-      '.dsh-ps-capture-input{flex:1;min-width:0;height:38px;padding:0;border:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13.5px;line-height:20px;outline:none}',
+      '.dsh-ps-capture-input{flex:1;min-width:0;height:40px;padding:0;border:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13.5px;line-height:20px;outline:none}',
       '.dsh-ps-capture-input::placeholder{color:var(--dsw-alias-label-secondary)}',
-      '.dsh-ps-capture-submit{flex:none;display:inline-flex;align-items:center;justify-content:center;gap:6px;height:38px;padding:0 18px;border:0;border-radius:999px;background:linear-gradient(135deg,var(--ps-violet) 0%,var(--ps-indigo) 100%);color:var(--ps-white);font:inherit;font-size:13px;font-weight:600;line-height:1;white-space:nowrap;cursor:pointer;box-shadow:0 10px 22px -12px color-mix(in srgb,var(--ps-violet) 58%,transparent);transition:filter 160ms ease-out,transform 160ms ease-out,opacity 160ms ease-out}',
+      '.dsh-ps-capture-submit{flex:none;display:inline-flex;align-items:center;justify-content:center;gap:5px;height:34px;padding:0 14px;border:0;border-radius:999px;background:linear-gradient(135deg,var(--ps-violet) 0%,var(--ps-indigo) 100%);color:var(--ps-white);font:inherit;font-size:12.5px;font-weight:600;line-height:1;white-space:nowrap;cursor:pointer;box-shadow:0 10px 22px -12px color-mix(in srgb,var(--ps-violet) 58%,transparent);transition:filter 160ms ease-out,transform 160ms ease-out,opacity 160ms ease-out}',
       '.dsh-ps-capture-submit:hover:not(:disabled){filter:brightness(1.05);transform:translateY(-1px)}',
       '.dsh-ps-capture-submit:disabled{cursor:not-allowed;opacity:.45;transform:none}',
       '.dsh-ps-capture-submit:focus-visible{outline:2px solid color-mix(in srgb,var(--ps-violet) 55%,transparent);outline-offset:2px}',
@@ -1892,7 +1887,7 @@ window.__ModuleLoader__.load({
       '.dsh-ps-today-sec-head{display:flex;align-items:center;gap:8px;min-width:0}',
       '.dsh-ps-today-sec-icon{display:inline-flex;flex:none;color:color-mix(in srgb,var(--ps-violet-deep) 56%,var(--dsw-alias-label-secondary))}',
       '.dsh-ps-today-sec-title{margin:0;font-size:14px;font-weight:600;line-height:20px;letter-spacing:-.01em;white-space:nowrap}',
-      '.dsh-ps-today-sec-count{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;padding:0 7px;border-radius:999px;background:color-mix(in srgb,var(--ps-violet) 11%,transparent);color:color-mix(in srgb,var(--ps-violet-deep) 62%,var(--dsw-alias-label-primary));font-size:11px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}',
+      '.dsh-ps-today-sec-count{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:23px;padding:0 8px;border-radius:999px;background:color-mix(in srgb,var(--ps-violet) 11%,transparent);color:color-mix(in srgb,var(--ps-violet-deep) 62%,var(--dsw-alias-label-primary));font-size:12.5px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}',
       '.dsh-ps-today-sec-grow{flex:1;min-width:4px}',
       '.dsh-ps-today-empty{margin:0;padding:12px 4px 6px;font-size:12.5px;line-height:19px;color:var(--dsw-alias-label-secondary);text-align:center}',
       '.dsh-ps-today-list{display:flex;flex-direction:column;gap:8px;min-width:0;margin:0;padding:0;list-style:none}',
@@ -1904,17 +1899,17 @@ window.__ModuleLoader__.load({
       '.dsh-ps-today-row[data-kind="failed"]{border-left:3px solid color-mix(in srgb,var(--ps-rose) 55%,transparent);padding-left:9px}',
       '.dsh-ps-today-main-col{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}',
       '.dsh-ps-today-title{font-size:13px;font-weight:600;line-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-      '.dsh-ps-today-hint{font-size:11.5px;line-height:16px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dsh-ps-today-hint{font-size:12.5px;line-height:17px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.dsh-ps-today-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex:none;justify-content:flex-end}',
-      '.dsh-ps-today-time{flex:none;min-width:42px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}',
+      '.dsh-ps-today-time{flex:none;min-width:46px;font-size:12.5px;line-height:17px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}',
       '.dsh-ps-today-done-body{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}',
-      '.dsh-ps-today-result{font-size:12px;line-height:17px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dsh-ps-today-result{font-size:12.5px;line-height:18px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.dsh-ps-today-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-top:2px}',
-      '.dsh-ps-today-foot-text{font-size:11.5px;line-height:17px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}',
+      '.dsh-ps-today-foot-text{font-size:12.5px;line-height:18px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}',
       '.dsh-ps-brief-card{background:radial-gradient(120% 120% at 100% 0%,color-mix(in srgb,var(--ps-violet) 9%,transparent),transparent 62%),color-mix(in srgb,var(--dsw-alias-bg-layer-1) 92%,transparent)}',
       '.dsh-ps-brief-card[data-state="unsupported"]{background:color-mix(in srgb,var(--dsw-alias-label-primary) 2%,var(--dsw-alias-bg-layer-1));border-style:dashed}',
       '.dsh-ps-brief-snippet{margin:0;font-size:12.5px;line-height:19px;color:var(--dsw-alias-label-secondary);display:-webkit-box;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}',
-      '.dsh-ps-brief-meta{font-size:11.5px;line-height:17px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}',
+      '.dsh-ps-brief-meta{font-size:12.5px;line-height:18px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}',
       '.dsh-ps-brief-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
       '.dsh-ps-brief-actions .dsh-ps-btn{height:36px}',
       '.dsh-ps-side-card{padding:14px 16px}',
@@ -1943,9 +1938,71 @@ window.__ModuleLoader__.load({
       '.dsh-ps-log-state[data-ok="true"]{background:color-mix(in srgb,var(--ps-mint) 13%,transparent);color:color-mix(in srgb,var(--ps-mint) 55%,var(--dsw-alias-label-primary))}',
       '.dsh-ps-log-state[data-ok="false"]{background:color-mix(in srgb,var(--ps-rose) 12%,transparent);color:color-mix(in srgb,var(--ps-rose) 62%,var(--dsw-alias-label-primary))}',
       '@media (max-width: 1000px){.dsh-ps-today{grid-template-columns:minmax(0,1fr)}.dsh-ps-today-side{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));align-items:start}}',
-      '@media (max-width: 900px){.dsh-ps-header-mid{order:3;width:100%;padding-top:0}}',
-      '@media (max-width: 640px){.dsh-ps-header-actions .dsh-ps-bell{width:100%}.dsh-ps-today-section{padding:13px 13px}.dsh-ps-today-row{flex-wrap:wrap}.dsh-ps-today-actions{width:100%;justify-content:flex-start}.dsh-ps-capture{padding:8px 8px 8px 12px}.dsh-ps-capture-submit{padding:0 14px}.dsh-ps-ledger-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dsh-ps-shortcuts{grid-template-columns:minmax(0,1fr)}}',
-      '@media (prefers-reduced-motion: reduce){.dsh-ps-view-btn,.dsh-ps-bell,.dsh-ps-capture,.dsh-ps-capture-submit,.dsh-ps-today-row,.dsh-ps-shortcut,.dsh-ps-notif-item{transition:none}.dsh-ps-notif-popover{animation:none}}',
+      '@media (max-width: 1000px){.dsh-ps-title{font-size:22px}.dsh-ps-subtitle{font-size:12.5px}.dsh-ps-view-btn{height:28px;padding:0 11px}.dsh-ps-header-actions .dsh-ps-btn{padding:0 11px}}',
+      '@media (max-width: 900px){.dsh-ps-header-actions .dsh-ps-btn-label{display:none}.dsh-ps-header-actions .dsh-ps-btn{width:36px;height:36px;padding:0;justify-content:center}.dsh-ps-header-actions .dsh-ps-btn-primary{width:36px}.dsh-ps-subtitle{display:none}.dsh-ps-title{font-size:20px}}',
+      '@media (max-width: 640px){.dsh-ps-today-section{padding:13px 13px}.dsh-ps-today-row{flex-wrap:wrap}.dsh-ps-today-actions{width:100%;justify-content:flex-start}.dsh-ps-capture{height:42px;padding:0 3px 0 11px}}',
+      '@media (prefers-reduced-motion: reduce){.dsh-ps-view-btn,.dsh-ps-bell,.dsh-ps-capture,.dsh-ps-capture-submit,.dsh-ps-today-row,.dsh-ps-shortcut,.dsh-ps-notif-item{transition:none}.dsh-ps-notif-popover{animation:none}}',,
+      // ---- v0.7: minimal today page, task status bar, merged review drawer --
+      '.dsh-ps-today-page{display:flex;flex-direction:column;gap:14px;width:100%;max-width:920px;min-width:0;margin:0}',
+      '.dsh-ps-greet-row{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:2px 2px 0;min-width:0}',
+      '.dsh-ps-greet-row .dsh-ps-greet-date{flex:none;font-weight:600}',
+      '.dsh-ps-greet-line{margin:0;font-size:15px;font-weight:500;line-height:23px;color:var(--dsw-alias-label-secondary);min-width:0}',
+      '.dsh-ps-brief-lines{display:flex;flex-direction:column;gap:5px;margin:0;padding:0;list-style:none}',
+      '.dsh-ps-brief-line{margin:0;font-size:13.5px;line-height:21px;color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}',
+      '.dsh-ps-brief-line::before{content:"·";margin-right:7px;color:color-mix(in srgb,var(--ps-violet-deep) 45%,var(--dsw-alias-label-secondary))}',
+      '.dsh-ps-brief-suggest{display:flex;flex-direction:column;gap:7px;margin-top:2px;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l1);min-width:0}',
+      '.dsh-ps-brief-suggest-title{margin:0;font-size:12.5px;font-weight:600;line-height:18px;color:var(--dsw-alias-label-secondary);letter-spacing:.01em}',
+      '.dsh-ps-brief-suggest-row{display:flex;align-items:center;gap:10px;min-width:0;padding:7px 9px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 2%,var(--dsw-alias-bg-layer-1))}',
+      '.dsh-ps-brief-suggest-text{flex:1;min-width:0;font-size:13px;line-height:19px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dsh-ps-brief-suggest-text strong{font-weight:600;color:var(--dsw-alias-label-primary)}',
+      '.dsh-ps-brief-suggest-reason{color:var(--dsw-alias-label-secondary)}',
+      '.dsh-ps-brief-suggest .dsh-ps-btn{height:32px;flex:none}',
+      '.dsh-ps-today-page .dsh-ps-today-section{padding:14px 16px}',
+      '.dsh-ps-today-page .dsh-ps-today-sec-title{font-size:14px}',
+      '.dsh-ps-today-page .dsh-ps-today-empty{padding:8px 4px 2px;font-size:12.5px}',
+      '.dsh-ps-today-page .dsh-ps-today-row{padding:8px 11px}',
+      '.dsh-ps-today-page .dsh-ps-today-title{font-size:13.5px;line-height:19px}',
+      '.dsh-ps-today-page .dsh-ps-today-actions .dsh-ps-btn{height:32px}',
+      '.dsh-ps-today-more{margin:2px 0 0;padding:2px 2px 0;font-size:12.5px;line-height:18px;color:var(--dsw-alias-label-secondary)}',
+      '.dsh-ps-today-tag{display:inline-flex;align-items:center;flex:none;height:22px;padding:0 8px;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 6%,transparent);color:var(--dsw-alias-label-secondary);font-size:12.5px;font-weight:600;line-height:1;white-space:nowrap}',
+      '.dsh-ps-today-tag[data-kind="blocked"],.dsh-ps-today-tag[data-kind="paused"]{background:color-mix(in srgb,var(--ps-amber) 14%,transparent);color:color-mix(in srgb,var(--ps-amber) 55%,var(--dsw-alias-label-primary))}',
+      '.dsh-ps-today-tag[data-kind="failed"]{background:color-mix(in srgb,var(--ps-rose) 12%,transparent);color:color-mix(in srgb,var(--ps-rose) 62%,var(--dsw-alias-label-primary))}',
+      '.dsh-ps-today-tag[data-kind="skills"]{background:color-mix(in srgb,var(--ps-violet) 11%,transparent);color:color-mix(in srgb,var(--ps-violet-deep) 62%,var(--dsw-alias-label-primary))}',
+      '.dsh-ps-today-foot{display:flex;align-items:center;justify-content:flex-start;gap:6px;flex-wrap:wrap;padding:2px 4px 6px;font-size:12.5px;line-height:19px;color:var(--dsw-alias-label-secondary)}',
+      '.dsh-ps-today-foot-sep{color:color-mix(in srgb,var(--dsw-alias-label-primary) 28%,transparent)}',
+      '.dsh-ps-foot-link{display:inline-flex;align-items:center;gap:4px;padding:0;border:0;background:transparent;color:var(--dsw-alias-link);font:inherit;font-size:12.5px;line-height:19px;cursor:pointer}',
+      '.dsh-ps-foot-link:hover{text-decoration:underline}',
+      '.dsh-ps-foot-link:focus-visible{outline:2px solid color-mix(in srgb,var(--ps-violet) 55%,transparent);outline-offset:2px;border-radius:6px}',
+      '.dsh-ps-taskbar{display:flex;align-items:center;gap:14px;min-width:0;height:44px;min-height:44px;max-height:44px;padding:0 2px;flex-wrap:nowrap;overflow:hidden}',
+      '.dsh-ps-taskbar-counts{display:flex;align-items:center;gap:14px;min-width:0;font-size:12.5px;line-height:18px;color:var(--dsw-alias-label-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}',
+      '.dsh-ps-taskbar-counts strong{font-weight:600;color:var(--dsw-alias-label-primary)}',
+      '.dsh-ps-taskbar-grow{flex:1;min-width:8px}',
+      '.dsh-ps-taskbar-switch{display:inline-flex;align-items:center;gap:8px;flex:none;font-size:12.5px;line-height:18px;color:var(--dsw-alias-label-secondary);white-space:nowrap}',
+      '.dsh-ps-taskbar-search{position:relative;display:flex;align-items:center;flex:1 1 200px;min-width:120px;height:32px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 3%,var(--dsw-alias-bg-layer-1));transition:border-color 180ms ease-out,box-shadow 180ms ease-out}',
+      '.dsh-ps-taskbar-search:focus-within{border-color:color-mix(in srgb,var(--ps-violet) 38%,var(--dsw-alias-border-l1));box-shadow:0 0 0 3px color-mix(in srgb,var(--ps-violet) 10%,transparent)}',
+      '.dsh-ps-taskbar-search-icon{position:absolute;left:11px;display:inline-flex;color:var(--dsw-alias-label-secondary);pointer-events:none}',
+      '.dsh-ps-taskbar-input{width:100%;height:30px;padding:0 30px 0 32px;border:0;border-radius:999px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:18px;outline:none}',
+      '.dsh-ps-taskbar-input::placeholder{color:var(--dsw-alias-label-secondary)}',
+      '.dsh-ps-taskbar-clear{position:absolute;right:5px;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:50%;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}',
+      '.dsh-ps-taskbar-clear:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary) 7%,transparent);color:var(--dsw-alias-label-primary)}',
+      '.dsh-ps-review-drawer{width:min(960px,100%)}',
+      '.dsh-ps-review-tabs{display:flex;align-items:center;gap:2px;flex:none;padding:0 20px;border-bottom:1px solid var(--dsw-alias-border-l1);overflow-x:auto}',
+      '.dsh-ps-review-tab{display:inline-flex;align-items:center;gap:6px;height:42px;padding:0 14px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;font-weight:600;white-space:nowrap;cursor:pointer;transition:color 160ms ease-out,border-color 160ms ease-out}',
+      '.dsh-ps-review-tab[aria-selected="true"]{color:var(--dsw-alias-label-primary);border-bottom-color:color-mix(in srgb,var(--ps-violet) 65%,transparent)}',
+      '.dsh-ps-review-tab:hover:not([aria-selected="true"]){color:var(--dsw-alias-label-primary)}',
+      '.dsh-ps-review-tab:focus-visible{outline:2px solid color-mix(in srgb,var(--ps-violet) 55%,transparent);outline-offset:-2px}',
+      '.dsh-ps-review-count{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 6px;border-radius:999px;background:color-mix(in srgb,var(--ps-rose) 12%,transparent);color:color-mix(in srgb,var(--ps-rose) 60%,var(--dsw-alias-label-primary));font-size:10.5px;font-weight:700;line-height:1}',
+      '.dsh-ps-review-body{display:flex;flex:1;min-height:0;overflow:hidden}',
+      '.dsh-ps-review-embedded{display:flex;flex:1;flex-direction:column;min-height:0;overflow:hidden}',
+      '.dsh-ps-review-embedded .dsh-ps-report-body{flex:1;min-height:0}',
+      '.dsh-ps-review-embedded .dsh-ps-evo-panel{flex:1;min-height:0;overflow:hidden}',
+      '.dsh-ps-review-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;flex:none;padding:10px 20px;border-bottom:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-label-primary) 2%,transparent)}',
+      '.dsh-ps-review-toolbar-status{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;line-height:18px;color:var(--dsw-alias-label-secondary)}',
+      '.dsh-ps-review-toolbar-grow{flex:1;min-width:6px}',
+      '@media (max-width: 900px){.dsh-ps-taskbar{gap:8px}.dsh-ps-taskbar-counts{gap:9px}.dsh-ps-taskbar-switch span{display:none}}',
+      '@media (max-width: 640px){.dsh-ps-today-page{gap:11px}.dsh-ps-today-page .dsh-ps-today-section{padding:12px 13px}.dsh-ps-review-tabs{padding:0 10px}.dsh-ps-review-tab{padding:0 10px;height:38px}.dsh-ps-brief-suggest-row{flex-wrap:wrap}.dsh-ps-brief-suggest-text{white-space:normal}.dsh-ps-today-row{flex-wrap:wrap}.dsh-ps-today-actions{width:100%;justify-content:flex-start}}',
+      '@media (prefers-reduced-motion: reduce){.dsh-ps-taskbar-search,.dsh-ps-taskbar-clear,.dsh-ps-review-tab,.dsh-ps-foot-link{transition:none}}'
+
     ].join('\n')
 
     // ------------------------------------------------------------------ helpers
@@ -2001,6 +2058,15 @@ window.__ModuleLoader__.load({
       if (value >= 1000000) return (value / 1000000).toFixed(1) + 'M'
       if (value >= 1000) return (value / 1000).toFixed(1) + 'k'
       return String(Math.round(value))
+    }
+
+    // Card meta needs a very short stamp: clock for today, M/D otherwise.
+    function formatCompactStamp(t, value, now) {
+      if (typeof value !== 'number' || !isFinite(value) || value <= 0) return '—'
+      const date = new Date(value)
+      if (isNaN(date.getTime())) return '—'
+      if (isSameLocalDay(value, now)) return pad2(date.getHours()) + ':' + pad2(date.getMinutes())
+      return (date.getMonth() + 1) + '/' + date.getDate()
     }
 
     function formatBytes(value) {
@@ -2122,19 +2188,6 @@ window.__ModuleLoader__.load({
       if (provider !== '' && model !== '' && provider !== model) label = provider + '/' + model
       if (effort !== '') label = label + ' · ' + effort
       return label
-    }
-
-    // Card meta row 2 only has room for a short "model · effort" hint; the
-    // fully-qualified provider/model/effort label stays in the tooltip + drawer.
-    function taskModelShortLabel(task) {
-      if (!task || typeof task !== 'object') return ''
-      const model = typeof task.model === 'string' && task.model !== ''
-        ? task.model
-        : (typeof task.provider === 'string' ? task.provider : '')
-      const effort = typeof task.reasoningEffort === 'string' && task.reasoningEffort !== '' ? task.reasoningEffort : ''
-      if (model === '') return effort
-      if (effort === '') return model
-      return model + ' · ' + effort
     }
 
     function taskDurationMs(task, now) {
@@ -2544,6 +2597,7 @@ window.__ModuleLoader__.load({
         lastError: null,
         lastGeneratedAt: null,
         generatingDate: null,
+        lastSuggestions: [],
       }
     }
 
@@ -2565,6 +2619,9 @@ window.__ModuleLoader__.load({
           ? raw.lastGeneratedAt
           : null,
         generatingDate: typeof raw.generatingDate === 'string' && raw.generatingDate !== '' ? raw.generatingDate : null,
+        lastSuggestions: raw.lastSuggestions !== undefined
+          ? normalizeBriefSuggestions(raw.lastSuggestions)
+          : (Array.isArray(base.lastSuggestions) ? base.lastSuggestions.slice() : []),
       }
     }
 
@@ -2618,23 +2675,6 @@ window.__ModuleLoader__.load({
     }
 
     // Morning-brief card: first two readable lines of the Markdown body.
-    function briefSnippetFromMarkdown(content) {
-      if (typeof content !== 'string' || content.trim() === '') return ''
-      const lines = content.replace(/\r\n?/g, '\n').split('\n')
-      const picked = []
-      for (let i = 0; i < lines.length && picked.length < 2; i += 1) {
-        let line = lines[i].replace(/\s+/g, ' ').trim()
-        if (line === '') continue
-        if (line.indexOf('#') === 0 || line.indexOf('---') === 0 || line.indexOf('```') === 0 || line.indexOf('>') === 0) continue
-        line = line.replace(/^[-*+]\s+/, '').replace(/^\d+[.)]\s+/, '')
-        if (line === '') continue
-        picked.push(line)
-      }
-      return picked.join(' ').slice(0, 140)
-    }
-
-    // One-line task outcome: prefer the stored final answer, then the last
-    // assistant message, then the error, so old session tasks degrade sanely.
     function taskResultOneLine(task, max) {
       if (!task || typeof task !== 'object') return ''
       const limit = typeof max === 'number' && max > 0 ? max : 80
@@ -2709,6 +2749,136 @@ window.__ModuleLoader__.load({
       } catch (error) {
         // storage may be unavailable in private contexts; read state stays usable
       }
+    }
+
+
+    // ---- v0.7: Markdown cleanup for card/row summaries. The board should never
+    // show raw `#`, `**`, backticks or horizontal rules in a two-line snippet.
+    function stripMarkdown(value) {
+      if (typeof value !== 'string' || value === '') return ''
+      let text = value.replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ')
+      text = text.replace(/```[\s\S]*?```/g, ' ')
+      text = text.replace(/`([^`]*)`/g, '$1')
+      text = text.replace(/^[ \t]{0,3}#{1,6}[ \t]*/gm, '')
+      text = text.replace(/^[ \t]{0,3}>[ \t]?/gm, '')
+      text = text.replace(/^[ \t]{0,3}([-*_])[ \t]*\1[ \t]*\1[ \t]*$/gm, ' ')
+      text = text.replace(/^[ \t]{0,3}[-*+][ \t]+/gm, '')
+      text = text.replace(/^[ \t]{0,3}\d+[.)][ \t]+/gm, '')
+      text = text.replace(/(^|\s)#{1,6}\s+/g, '$1')
+      text = text.replace(/(^|\s)(?:-{3,}|\*{3,}|_{3,})(?=\s|$)/g, '$1')
+      text = text.replace(/\*\*([^*]+)\*\*/g, '$1')
+      text = text.replace(/__([^_]+)__/g, '$1')
+      text = text.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1$2')
+      text = text.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      text = text.replace(/<https?:\/\/[^>]+>/g, ' ')
+      text = text.replace(/[ \t]+/g, ' ')
+      text = text.replace(/\n{2,}/g, '\n')
+      return text.trim()
+    }
+
+    function stripMarkdownInline(value) {
+      return stripMarkdown(value).replace(/\n+/g, ' ').replace(/\s{2,}/g, ' ').trim()
+    }
+
+    // Suggestion rows rendered by the brief block; the Host writes them into
+    // settings.morningBrief.lastSuggestions (v0.7+). Older snapshots simply
+    // have none, so keep a tiny client-side fallback from pending / ideas.
+    function normalizeBriefSuggestions(raw) {
+      const list = []
+      if (!Array.isArray(raw)) return list
+      for (let i = 0; i < raw.length && list.length < 3; i += 1) {
+        const item = raw[i]
+        if (!item || typeof item !== 'object') continue
+        const prompt = typeof item.prompt === 'string' ? item.prompt.trim() : ''
+        let title = typeof item.title === 'string' ? item.title.trim() : ''
+        if (title === '' && prompt !== '') title = firstSentence(prompt, 60)
+        if (title === '') continue
+        list.push({
+          title: title,
+          reason: typeof item.reason === 'string' ? item.reason.trim() : '',
+          prompt: prompt !== '' ? prompt : title,
+          priority: normalizePriority(item.priority),
+        })
+      }
+      return list
+    }
+
+    function fallbackBriefSuggestions(tasks, t) {
+      const list = []
+      const pending = []
+      const ideas = []
+      if (Array.isArray(tasks)) {
+        for (let i = 0; i < tasks.length; i += 1) {
+          const task = tasks[i]
+          if (task.status === 'pending' && pending.length < 2) pending.push(task)
+          else if (task.status === 'idea') ideas.push(task)
+        }
+      }
+      ideas.sort(function (left, right) { return (right.createdAt || 0) - (left.createdAt || 0) })
+      const translate = typeof t === 'function' ? t : function (key) { return key }
+      for (let i = 0; i < pending.length; i += 1) {
+        list.push({
+          title: pending[i].title,
+          reason: translate('focusReasonPending'),
+          prompt: pending[i].prompt !== '' ? pending[i].prompt : pending[i].title,
+          priority: normalizePriority(pending[i].priority),
+        })
+      }
+      if (ideas.length > 0) {
+        list.push({
+          title: ideas[0].title,
+          reason: translate('focusReasonIdea'),
+          prompt: ideas[0].prompt !== '' ? ideas[0].prompt : ideas[0].title,
+          priority: normalizePriority(ideas[0].priority),
+        })
+      }
+      return list.slice(0, 3)
+    }
+
+    // First section of a brief (e.g. 「一、昨天发生了什么」), Markdown stripped.
+    // Renders up to three bullets for the today card without leaking the
+    // suggestions section (that one is rendered as a separate action list).
+    function briefSummaryLines(content, maxLines) {
+      const limit = typeof maxLines === 'number' && maxLines > 0 ? maxLines : 3
+      const out = []
+      if (typeof content !== 'string' || content.trim() === '') return out
+      const lines = content.replace(/\r\n?/g, '\n').split('\n')
+      let start = -1
+      let end = lines.length
+      for (let i = 0; i < lines.length; i += 1) {
+        if (/^[ \t]{0,3}##[ \t]+/.test(lines[i])) {
+          if (start < 0) start = i + 1
+          else { end = i; break }
+        }
+      }
+      if (start < 0) start = 0
+      for (let i = start; i < end && out.length < limit; i += 1) {
+        const raw = lines[i].trim()
+        if (raw === '' || raw.indexOf('```') === 0) continue
+        if (/^[ \t]{0,3}([-*_])[ \t]*\1[ \t]*\1[ \t]*$/.test(raw)) continue
+        if (/^[ \t]{0,3}>/.test(raw)) continue
+        const text = stripMarkdownInline(raw
+          .replace(/^[ \t]{0,3}[-*+][ \t]+/, '')
+          .replace(/^[ \t]{0,3}\d+[.)][ \t]+/, ''))
+        if (text === '' || text === '-' || text === '无') continue
+        out.push(text)
+      }
+      return out
+    }
+
+    // Global task search (task view status bar): title / prompt / folder / result.
+    function matchesGlobalSearch(task, term) {
+      if (!task || term === '') return true
+      const result = task.result && typeof task.result === 'object' ? task.result : null
+      const haystack = [
+        task.title,
+        task.prompt,
+        task.cwd,
+        task.lastMessage,
+        task.error,
+        result && typeof result.finalAnswer === 'string' ? result.finalAnswer : '',
+      ].join('\n').toLowerCase()
+      return haystack.indexOf(term) >= 0
     }
 
     const MAX_BACKUP_ROWS = 5
@@ -3259,35 +3429,6 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'dsh-ps-meta-cell', 'data-span': props.span === 2 ? '2' : undefined },
         h('span', { className: 'dsh-ps-meta-label' }, props.label),
         h('span', { className: className, title: props.title }, props.children !== undefined ? props.children : props.value))
-    }
-
-    // HUD-style KPI module: tone-coded gradient surface, angled icon tile,
-    // monospace number, tone-tinted sub-line and (for 处理中) a shimmer bar.
-    // Soft consumer-style KPI card (v7): pastel icon tile, friendly big
-    // number, label + tone-tinted sub-line; 处理中 is the violet hero card.
-    function KpiModule(props) {
-      const label = props.label
-      const value = props.value
-      const progress = props.progress || null
-      return h('div', {
-        className: 'dsh-ps-kpi',
-        'data-tone': props.tone,
-        'data-kpi': props.metric,
-        role: 'group',
-        'aria-label': props.t('kpiModuleAria', { label: label, value: value }),
-      },
-      h('div', { className: 'dsh-ps-kpi-top' },
-        h('span', { className: 'dsh-ps-kpi-tile', 'aria-hidden': 'true' },
-          h('span', { className: 'dsh-ps-kpi-tile-icon' }, h(props.icon, { size: 19 }))),
-        props.pulse ? h('span', { className: 'dsh-ps-kpi-pulse', 'aria-hidden': 'true' }) : null),
-      h('div', { className: 'dsh-ps-kpi-numbers' },
-        h('span', { className: 'dsh-ps-kpi-number' }, value),
-        h('span', { className: 'dsh-ps-kpi-label' }, label)),
-      h('span', { className: 'dsh-ps-kpi-sub' }, props.sub),
-      progress
-        ? h('div', { className: 'dsh-ps-kpi-bar', 'data-active': progress.active ? 'true' : 'false', 'aria-hidden': 'true' },
-          h('span', { className: 'dsh-ps-kpi-bar-fill', style: { width: String(Math.round(Math.max(0, Math.min(1, progress.ratio)) * 100)) + '%' } }))
-        : null)
     }
 
     function ToastStack(props) {
@@ -4326,7 +4467,7 @@ window.__ModuleLoader__.load({
       const result = task.result
       const answer = result && typeof result.finalAnswer === 'string' ? result.finalAnswer : ''
       const titleText = typeof task.title === 'string' ? task.title : ''
-      const modelShort = taskModelShortLabel(task)
+      const modelShort = task.model !== '' ? task.model : (task.provider || '')
       const modelTitle = taskModelLabel(task)
       const durationMs = taskDurationMs(task, props.now)
       const usage = result && result.usage ? result.usage : null
@@ -4357,6 +4498,7 @@ window.__ModuleLoader__.load({
       } else {
         contextText = snippetTextOf(task.prompt) || snippetTextOf(task.lastMessage)
       }
+      contextText = stripMarkdownInline(contextText)
       if (isDuplicateText(contextText, titleText)) contextText = ''
       const contextEmpty = contextText === ''
       const contextDisplay = contextEmpty ? t('contextEmpty') : contextText
@@ -4393,7 +4535,8 @@ window.__ModuleLoader__.load({
       }
       const metaOneTitle = metaOneTitleParts.join(' · ')
 
-      /* ---- zone 4: meta row 2 — created · elapsed · model · tokens · turns ---- */
+      /* ---- zone 4: meta row 2 — at most three chips: time · elapsed · model
+         (tokens/turns stay in the tooltip and the detail drawer) ---- */
       const metaTwoNodes = []
       const metaTwoTitleParts = []
       function pushMetaTwo(key, text, titleAttr, live) {
@@ -4408,25 +4551,18 @@ window.__ModuleLoader__.load({
         }, h('span', null, text)))
         metaTwoTitleParts.push(titleAttr)
       }
-      if (createdAt > 0) {
-        pushMetaTwo('created', t('createdChip', { time: formatRelativeTime(t, createdAt, props.now) }), createdTitle, false)
+      if (isEnded && task.endedAt > 0) {
+        pushMetaTwo('created', formatCompactStamp(t, task.endedAt, props.now), formatFullTime(task.endedAt), false)
+      } else if (createdAt > 0) {
+        pushMetaTwo('created', formatCompactStamp(t, createdAt, props.now), createdTitle, false)
       }
       if (isRunning || isBlocked) {
-        pushMetaTwo('duration', t('runningFor', { duration: formatDuration(durationMs) }), t('runningFor', { duration: formatDuration(durationMs) }), true)
+        pushMetaTwo('duration', formatDuration(durationMs), t('runningFor', { duration: formatDuration(durationMs) }), true)
       } else if (isEnded && durationMs > 0) {
-        pushMetaTwo('duration', t('durationChip', { duration: formatDuration(durationMs) }), t('durationChip', { duration: formatDuration(durationMs) }), false)
+        pushMetaTwo('duration', formatDuration(durationMs), t('durationChip', { duration: formatDuration(durationMs) }), false)
       }
       if (modelShort !== '') {
         pushMetaTwo('model', modelShort, t('model') + ': ' + modelTitle, false)
-      }
-      if (totalTokens > 0) {
-        const usageTitle = usage
-          ? t('tokensUsage', { input: formatNumber(usage.inputTokens || 0), output: formatNumber(usage.outputTokens || 0) })
-          : t('tokensChip', { tokens: formatNumber(totalTokens) })
-        pushMetaTwo('tokens', t('tokensChip', { tokens: formatTokens(totalTokens) }), usageTitle, false)
-      }
-      if (turns > 0) {
-        pushMetaTwo('turns', t('turnsChip', { count: turns }), t('turns') + ': ' + turns, false)
       }
       if (metaTwoNodes.length === 0) {
         pushMetaTwo('empty', t('contextEmpty'), t('status') + ': ' + statusText, false)
@@ -4928,8 +5064,7 @@ window.__ModuleLoader__.load({
       const t = props.t
       const filter = props.filter
       const menuActive = isColumnFilterMenuActive(filter)
-      const searchActive = filter.query !== ''
-      const filtered = menuActive || searchActive
+      const filtered = menuActive
       return h('section', {
         className: 'dsh-ps-column',
         'data-column': props.variant,
@@ -4964,28 +5099,6 @@ window.__ModuleLoader__.load({
           },
           h(IconFilter, { size: 13 }),
           menuActive ? h('span', { className: 'dsh-ps-funnel-dot', 'aria-hidden': 'true' }) : null)),
-        h('div', { className: 'dsh-ps-column-tools' },
-          h('div', { className: 'dsh-ps-col-search' },
-            h('span', { className: 'dsh-ps-col-search-icon', 'aria-hidden': 'true' }, h(IconSearch, { size: 12 })),
-            h('input', {
-              className: 'dsh-ps-input dsh-ps-col-search-input',
-              type: 'search',
-              value: filter.query,
-              placeholder: t('columnSearchPlaceholder'),
-              'aria-label': t('columnSearchPlaceholder') + ' · ' + props.title,
-              'data-column-search': props.variant,
-              spellCheck: false,
-              onChange: function (event) { props.onSearch(event.target.value) },
-            }),
-            searchActive
-              ? h('button', {
-                type: 'button',
-                className: 'dsh-ps-col-search-clear',
-                'aria-label': t('columnSearchClear'),
-                title: t('columnSearchClear'),
-                onClick: props.onClearSearch,
-              }, h(IconClose, { size: 11 }))
-              : null)),
         filter.open
           ? h(ColumnFilterPopover, {
             column: props.variant,
@@ -7485,24 +7598,6 @@ window.__ModuleLoader__.load({
 
     // ------------------------------------------------------------------ today workbench (v0.6)
 
-    function formatClock(value) {
-      if (typeof value !== 'number' || !isFinite(value) || value <= 0) return '—'
-      const date = new Date(value)
-      if (isNaN(date.getTime())) return '—'
-      return pad2(date.getHours()) + ':' + pad2(date.getMinutes())
-    }
-
-    function usageTokensOf(task) {
-      if (!task || typeof task !== 'object') return 0
-      const usage = task.result && task.result.usage
-      if (!usage || typeof usage !== 'object') return 0
-      let total = 0
-      if (typeof usage.inputTokens === 'number' && isFinite(usage.inputTokens)) total += Math.max(0, usage.inputTokens)
-      if (typeof usage.outputTokens === 'number' && isFinite(usage.outputTokens)) total += Math.max(0, usage.outputTokens)
-      if (total === 0 && typeof usage.totalTokens === 'number' && isFinite(usage.totalTokens)) total = Math.max(0, usage.totalTokens)
-      return total
-    }
-
     function taskEventAt(task) {
       if (!task || typeof task !== 'object') return 0
       if (typeof task.updatedAt === 'number' && isFinite(task.updatedAt) && task.updatedAt > 0) return task.updatedAt
@@ -7542,38 +7637,6 @@ window.__ModuleLoader__.load({
       return list
     }
 
-    function buildFocusPool(tasks) {
-      const pending = []
-      const ideas = []
-      if (Array.isArray(tasks)) {
-        for (let i = 0; i < tasks.length; i += 1) {
-          const task = tasks[i]
-          if (task.status === 'pending') pending.push(task)
-          else if (task.status === 'idea') ideas.push(task)
-        }
-      }
-      ideas.sort(function (left, right) {
-        const leftAt = typeof left.createdAt === 'number' ? left.createdAt : 0
-        const rightAt = typeof right.createdAt === 'number' ? right.createdAt : 0
-        return rightAt - leftAt
-      })
-      const pool = []
-      for (let i = 0; i < pending.length; i += 1) pool.push({ task: pending[i], kind: 'pending' })
-      for (let i = 0; i < ideas.length; i += 1) pool.push({ task: ideas[i], kind: 'idea' })
-      return pool
-    }
-
-    function focusReasonOf(item, titleById, t) {
-      const task = item.task
-      if (task.chainFrom !== '' && titleById.get(task.chainFrom)) {
-        return t('focusReasonChain', { title: titleById.get(task.chainFrom) })
-      }
-      const priority = normalizePriority(task.priority)
-      if (priority === 'urgent' || priority === 'high') return t('focusReasonPriority')
-      if (item.kind === 'pending') return t('focusReasonPending')
-      return t('focusReasonIdea')
-    }
-
     function TodayView(props) {
       const t = props.t
       const store = props.store
@@ -7583,20 +7646,23 @@ window.__ModuleLoader__.load({
       const settings = snap.settings
       const today = todayKey()
       const date = new Date(now)
+      const dateText = (date.getMonth() + 1) + '月' + date.getDate() + '日 · ' + t(WEEKDAY_KEYS[date.getDay()])
+
       const [capture, setCapture] = React.useState('')
       const [capturing, setCapturing] = React.useState(false)
-      const [focusRotation, setFocusRotation] = React.useState(0)
-      const [briefSnippet, setBriefSnippet] = React.useState('')
+      const [briefLines, setBriefLines] = React.useState([])
+      const [joinBusy, setJoinBusy] = React.useState(null)
 
       const briefsState = snap.briefs || { phase: 'idle', items: [], settings: null, error: null, supported: true }
-      const briefSettings = briefsState.settings || (settings && settings.morningBrief) || defaultMorningBriefSettings()
+      // Contract §5.2 reads suggestions from settings.morningBrief.lastSuggestions,
+      // so prefer the settings object when present and fall back to /briefs meta.
+      const briefSettings = (settings && settings.morningBrief) || briefsState.settings || defaultMorningBriefSettings()
       const briefsSupported = briefsState.supported !== false
+      const briefGenerating = briefSettings.lastStatus === 'running' || Boolean(briefSettings.generatingDate)
       let todayBrief = null
       for (let i = 0; i < briefsState.items.length; i += 1) {
         if (briefsState.items[i].date === today) { todayBrief = briefsState.items[i]; break }
       }
-      const briefGenerating = briefSettings.lastStatus === 'running' || Boolean(briefSettings.generatingDate)
-
       let briefState = 'none'
       if (!briefsSupported) briefState = 'unsupported'
       else if (briefGenerating) briefState = 'generating'
@@ -7606,59 +7672,38 @@ window.__ModuleLoader__.load({
       const briefSig = todayBrief ? todayBrief.date + ':' + String(todayBrief.updatedAt) : ''
       React.useEffect(function () {
         if (!todayBrief) {
-          setBriefSnippet('')
+          setBriefLines([])
           return undefined
         }
         let alive = true
         store.loadBriefContent(today).then(function (result) {
           if (!alive) return
-          if (result.ok && result.data && typeof result.data.content === 'string') {
-            setBriefSnippet(briefSnippetFromMarkdown(result.data.content))
-          } else {
-            setBriefSnippet('')
-          }
+          const text = result.ok && result.data && typeof result.data.content === 'string' ? result.data.content : ''
+          setBriefLines(briefSummaryLines(text, 3))
         })
         return function () { alive = false }
       }, [briefSig, today, store])
 
-      const titleById = new Map()
-      for (let i = 0; i < tasks.length; i += 1) titleById.set(tasks[i].id, tasks[i].title)
+      // Host v0.7 writes structured suggestions; older briefs have none, so
+      // derive a minimal fallback from the queue / ideas to keep the block useful.
+      const storedSuggestions = Array.isArray(briefSettings.lastSuggestions) ? briefSettings.lastSuggestions : []
+      const suggestions = storedSuggestions.length > 0
+        ? normalizeBriefSuggestions(storedSuggestions)
+        : fallbackBriefSuggestions(tasks, t)
+      const showSuggestions = suggestions.length > 0 && briefState !== 'off' && briefState !== 'unsupported'
 
       const waiting = waitingTasksOf(tasks)
       const proposed = snap.evolution ? snap.evolution.proposedSkillCount : 0
       const waitingCount = waiting.length + (proposed > 0 ? 1 : 0)
-
-      const focusPool = buildFocusPool(tasks)
-      const focusVisible = []
-      if (focusPool.length > 0) {
-        const start = ((focusRotation * FOCUS_ROTATE) % focusPool.length + focusPool.length) % focusPool.length
-        for (let i = 0; i < focusPool.length && focusVisible.length < FOCUS_SIZE; i += 1) {
-          focusVisible.push(focusPool[(start + i) % focusPool.length])
-        }
-      }
-
       const running = []
       for (let i = 0; i < tasks.length; i += 1) {
         if (tasks[i].status === 'running') running.push(tasks[i])
       }
-
-      const doneToday = []
+      let doneTodayCount = 0
       for (let i = 0; i < tasks.length; i += 1) {
         const task = tasks[i]
         if (task.status !== 'done') continue
-        const stamp = task.endedAt || task.updatedAt
-        if (isSameLocalDay(stamp, now)) doneToday.push(task)
-      }
-      doneToday.sort(function (left, right) { return (right.endedAt || 0) - (left.endedAt || 0) })
-      const doneVisible = doneToday.slice(0, TODAY_DONE_MAX)
-      let tokensToday = 0
-      for (let i = 0; i < doneToday.length; i += 1) tokensToday += usageTokensOf(doneToday[i])
-      let weekDone = 0
-      const weekCutoff = now - 7 * 24 * 60 * 60 * 1000
-      for (let i = 0; i < tasks.length; i += 1) {
-        if (tasks[i].status !== 'done') continue
-        const stamp = tasks[i].endedAt || tasks[i].updatedAt
-        if (typeof stamp === 'number' && stamp >= weekCutoff) weekDone += 1
+        if (isSameLocalDay(task.endedAt || task.updatedAt, now)) doneTodayCount += 1
       }
 
       function submitCapture() {
@@ -7668,9 +7713,7 @@ window.__ModuleLoader__.load({
         Promise.resolve(props.onCapture(text)).then(function (result) {
           setCapturing(false)
           if (result && result.ok) setCapture('')
-        }, function () {
-          setCapturing(false)
-        })
+        }, function () { setCapturing(false) })
       }
 
       function onCaptureKeyDown(event) {
@@ -7680,10 +7723,12 @@ window.__ModuleLoader__.load({
         submitCapture()
       }
 
-      function openTaskRow(task, event) {
-        const target = event && event.target
-        if (target && typeof target.closest === 'function' && target.closest('button')) return
-        props.onOpenTask(task.id)
+      function joinSuggestion(suggestion) {
+        if (joinBusy !== null) return
+        setJoinBusy(suggestion.title)
+        Promise.resolve(props.onJoinSuggestion(suggestion)).then(function () {
+          setJoinBusy(null)
+        }, function () { setJoinBusy(null) })
       }
 
       function stopAnd(task, action, event) {
@@ -7696,230 +7741,207 @@ window.__ModuleLoader__.load({
         props.onOpenTaskChat(task)
       }
 
-      function actionButton(label, onClick, tone) {
-        const className = 'dsh-ps-btn dsh-ps-btn-sm' + (tone === 'primary' ? ' dsh-ps-btn-primary' : (tone === 'ghost' ? ' dsh-ps-btn-ghost' : ''))
-        return h('button', { type: 'button', className: className, onClick: onClick }, h('span', null, label))
+      function stopAndOpenDetail(task, event) {
+        if (event) event.stopPropagation()
+        props.onOpenTask(task.id)
       }
 
-      function waitingRow(task) {
-        let hint = ''
-        if (task.status === 'blocked') {
-          hint = t('waitBlocked') + ' · ' + t('waitBlockedHint', { duration: formatDuration(Math.max(0, now - (task.updatedAt || now))) })
-        } else if (task.status === 'paused') {
-          hint = t('waitPaused') + ' · ' + t('waitPausedHint')
-        } else {
-          hint = t('waitFailed') + ' · ' + t('waitFailedHint', { time: formatRelativeTime(t, task.updatedAt || task.createdAt, now) })
+      // ---- block 1: 今日简报 -------------------------------------------------
+      const briefHead = h('div', { className: 'dsh-ps-today-sec-head' },
+        h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconFileText, { size: 15 })),
+        h('h3', { className: 'dsh-ps-today-sec-title' }, t('todayBrief')),
+        todayBrief ? h('span', { className: 'dsh-ps-today-sec-count' }, todayBrief.date) : null)
+
+      let briefBody = null
+      if (briefState === 'ready') {
+        const lineNodes = []
+        for (let i = 0; i < briefLines.length; i += 1) {
+          lineNodes.push(h('li', { key: 'brief-line-' + i, className: 'dsh-ps-brief-line' }, briefLines[i]))
         }
-        const actions = []
-        if (task.status === 'blocked') {
-          actions.push(actionButton(t('openSession'), function (event) { stopAndOpen(task, event) }, 'primary'))
-          actions.push(actionButton(t('pause'), function (event) { stopAnd(task, 'pause', event) }))
-        } else if (task.status === 'paused') {
-          actions.push(actionButton(t('resume'), function (event) { stopAnd(task, 'resume', event) }, 'primary'))
-          actions.push(actionButton(t('openSession'), function (event) { stopAndOpen(task, event) }))
-        } else {
-          actions.push(actionButton(t('retry'), function (event) { stopAnd(task, 'retry', event) }, 'primary'))
-          actions.push(actionButton(t('openSession'), function (event) { stopAndOpen(task, event) }))
-        }
-        return h('li', {
-          key: task.id,
-          className: 'dsh-ps-today-row',
-          'data-kind': task.status,
-          'data-clickable': 'true',
-          onClick: function (event) { openTaskRow(task, event) },
-        },
-        h(StatusDot, { status: task.status }),
-        h('div', { className: 'dsh-ps-today-main-col' },
-          h('span', { className: 'dsh-ps-today-title', title: task.title }, task.title),
-          h('span', { className: 'dsh-ps-today-hint', title: hint }, hint)),
-        h('div', { className: 'dsh-ps-today-actions' }, actions))
-      }
-
-      const waitingNodes = []
-      for (let i = 0; i < waiting.length; i += 1) waitingNodes.push(waitingRow(waiting[i]))
-      if (proposed > 0) {
-        waitingNodes.push(h('li', {
-          key: 'skill-candidates',
-          className: 'dsh-ps-today-row',
-          'data-kind': 'skills',
-        },
-        h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconSpark, { size: 15 })),
-        h('div', { className: 'dsh-ps-today-main-col' },
-          h('span', { className: 'dsh-ps-today-title' }, t('waitSkillCandidates', { count: proposed })),
-          h('span', { className: 'dsh-ps-today-hint', title: t('waitSkillHint') }, t('waitSkillHint'))),
-        h('div', { className: 'dsh-ps-today-actions' },
-          actionButton(t('waitViewCandidates'), function (event) {
-            if (event) event.stopPropagation()
-            props.onOpenEvolution('skills')
-          }, 'primary'))))
-      }
-      const waitingSection = h('section', { className: 'dsh-ps-today-section', 'aria-label': t('needsYou') },
-        h('div', { className: 'dsh-ps-today-sec-head' },
-          h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconBell, { size: 15 })),
-          h('h3', { className: 'dsh-ps-today-sec-title' }, t('needsYou')),
-          waitingCount > 0 ? h('span', { className: 'dsh-ps-today-sec-count' }, String(waitingCount)) : null),
-        waitingNodes.length > 0
-          ? h('ul', { className: 'dsh-ps-today-list' }, waitingNodes)
-          : h('p', { className: 'dsh-ps-today-empty' }, t('needsYouEmpty')))
-
-      const focusNodes = []
-      for (let i = 0; i < focusVisible.length; i += 1) {
-        const item = focusVisible[i]
-        const task = item.task
-        const reason = focusReasonOf(item, titleById, t)
-        const primaryLabel = item.kind === 'pending' ? t('focusRunNow') : t('promote')
-        const primaryAction = item.kind === 'pending' ? 'run' : 'promote'
-        focusNodes.push(h('li', {
-          key: task.id,
-          className: 'dsh-ps-today-row',
-          'data-clickable': 'true',
-          onClick: function (event) { openTaskRow(task, event) },
-        },
-        h('span', { className: 'dsh-ps-today-sec-count' }, String(i + 1)),
-        h('div', { className: 'dsh-ps-today-main-col' },
-          h('span', { className: 'dsh-ps-today-title', title: task.title }, task.title),
-          h('span', { className: 'dsh-ps-today-hint', title: reason }, reason)),
-        h('div', { className: 'dsh-ps-today-actions' },
-          actionButton(primaryLabel, function (event) { stopAnd(task, primaryAction, event) }, 'primary'),
-          actionButton(t('edit'), function (event) {
-            if (event) event.stopPropagation()
-            props.onEdit(task)
-          }, 'ghost'))))
-      }
-      const focusSection = h('section', { className: 'dsh-ps-today-section', 'aria-label': t('todayFocus') },
-        h('div', { className: 'dsh-ps-today-sec-head' },
-          h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconSpark, { size: 15 })),
-          h('h3', { className: 'dsh-ps-today-sec-title' }, t('todayFocus')),
-          h('span', { className: 'dsh-ps-today-sec-grow' }),
-          focusPool.length > FOCUS_SIZE
-            ? h('button', {
+        briefBody = h(React.Fragment, null,
+          lineNodes.length > 0
+            ? h('ul', { className: 'dsh-ps-brief-lines' }, lineNodes)
+            : h('p', { className: 'dsh-ps-brief-line' }, t('briefReady')),
+          h('div', { className: 'dsh-ps-brief-actions' },
+            h('button', {
+              type: 'button',
+              className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-primary',
+              onClick: function () { props.onOpenBriefs() },
+            }, h(IconFileText, { size: 13 }), h('span', null, t('briefView'))),
+            h('button', {
+              type: 'button',
+              className: 'dsh-ps-btn dsh-ps-btn-sm',
+              disabled: briefGenerating,
+              onClick: function () { props.onGenerateBrief(today) },
+            }, briefGenerating ? h(Spinner) : h(IconRefresh, { size: 13 }),
+            h('span', null, briefGenerating ? t('briefGenerating') : t('briefsRegenerate')))))
+      } else if (briefState === 'generating') {
+        briefBody = h('p', { className: 'dsh-ps-today-more' }, t('briefGenerating'))
+      } else if (briefState === 'off') {
+        briefBody = h(React.Fragment, null,
+          h('p', { className: 'dsh-ps-today-more' }, t('briefOff')),
+          h('div', { className: 'dsh-ps-brief-actions' },
+            h('button', {
+              type: 'button',
+              className: 'dsh-ps-btn dsh-ps-btn-sm',
+              onClick: function () { props.onGoSettings() },
+            }, h('span', null, t('briefGoSettings')))))
+      } else if (briefState === 'unsupported') {
+        briefBody = h('p', { className: 'dsh-ps-today-more' }, t('briefUnsupported'))
+      } else {
+        briefBody = h(React.Fragment, null,
+          h('p', { className: 'dsh-ps-today-more' }, t('briefNoToday')),
+          h('div', { className: 'dsh-ps-brief-actions' },
+            h('button', {
+              type: 'button',
+              className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-primary',
+              disabled: briefGenerating,
+              onClick: function () { props.onGenerateBrief(today) },
+            }, h(IconPlay, { size: 13 }), h('span', null, t('briefGenerate'))),
+            h('button', {
               type: 'button',
               className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-ghost',
-              onClick: function () { setFocusRotation(function (value) { return value + 1 }) },
-            }, h(IconRefresh, { size: 13 }), h('span', null, t('focusShuffle')))
-            : null),
-        focusNodes.length > 0
-          ? h('ul', { className: 'dsh-ps-today-list' }, focusNodes)
-          : h('p', { className: 'dsh-ps-today-empty' }, t('focusEmpty')))
-
-      const runningNodes = []
-      for (let i = 0; i < running.length; i += 1) {
-        const task = running[i]
-        const model = taskModelLabel(task)
-        const hint = t('runningFor', { duration: formatDuration(taskDurationMs(task, now)) }) + (model !== '' ? ' · ' + model : '')
-        runningNodes.push(h('li', {
-          key: task.id,
-          className: 'dsh-ps-today-row',
-          'data-kind': 'running',
-          'data-clickable': 'true',
-          onClick: function (event) { openTaskRow(task, event) },
-        },
-        h(StatusDot, { status: 'running' }),
-        h('div', { className: 'dsh-ps-today-main-col' },
-          h('span', { className: 'dsh-ps-today-title', title: task.title }, task.title),
-          h('span', { className: 'dsh-ps-today-hint', title: hint }, hint)),
-        h('div', { className: 'dsh-ps-today-actions' },
-          actionButton(t('openSession'), function (event) {
-            if (event) event.stopPropagation()
-            props.onOpenSession(task)
-          }, 'primary'),
-          actionButton(t('pause'), function (event) { stopAnd(task, 'pause', event) }))))
+              onClick: function () { props.onOpenReview('journal') },
+            }, h('span', null, t('briefYesterdayLog')))))
       }
-      const runningSection = h('section', { className: 'dsh-ps-today-section', 'aria-label': t('todayRunning') },
-        h('div', { className: 'dsh-ps-today-sec-head' },
-          h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconPlay, { size: 15 })),
-          h('h3', { className: 'dsh-ps-today-sec-title' }, t('todayRunning')),
-          running.length > 0 ? h('span', { className: 'dsh-ps-today-sec-count' }, String(running.length)) : null),
-        runningNodes.length > 0
-          ? h('ul', { className: 'dsh-ps-today-list' }, runningNodes)
-          : h('p', { className: 'dsh-ps-today-empty' }, t('runningEmpty')))
 
-      const doneNodes = []
-      for (let i = 0; i < doneVisible.length; i += 1) {
-        const task = doneVisible[i]
-        const stamp = task.endedAt || task.updatedAt
-        const resultLine = taskResultOneLine(task, 80)
-        const duration = taskDurationMs(task, now)
-        doneNodes.push(h('li', {
-          key: task.id,
-          className: 'dsh-ps-today-row',
-          'data-clickable': 'true',
-          onClick: function (event) { openTaskRow(task, event) },
-        },
-        h('span', { className: 'dsh-ps-today-time' }, formatClock(stamp)),
-        h('div', { className: 'dsh-ps-today-done-body' },
-          h('span', { className: 'dsh-ps-today-title', title: task.title }, task.title),
-          h('span', { className: 'dsh-ps-today-result', title: resultLine || t('doneNoResult') }, resultLine || t('doneNoResult'))),
-        h('div', { className: 'dsh-ps-today-actions' },
-          duration > 0 ? h('span', { className: 'dsh-ps-today-hint' }, formatDuration(duration)) : null,
-          actionButton(t('view'), function (event) {
-            if (event) event.stopPropagation()
-            props.onOpenTask(task.id)
-          }, 'ghost'))))
+      const suggestionNodes = []
+      if (showSuggestions) {
+        for (let i = 0; i < suggestions.length; i += 1) {
+          const item = suggestions[i]
+          const busy = joinBusy === item.title
+          suggestionNodes.push(h('div', { key: 'suggest-' + i + '-' + item.title, className: 'dsh-ps-brief-suggest-row' },
+            h('span', { className: 'dsh-ps-brief-suggest-text', title: item.title + (item.reason ? ' — ' + item.reason : '') },
+              h('strong', null, item.title),
+              item.reason ? h('span', { className: 'dsh-ps-brief-suggest-reason' }, ' — ' + item.reason) : null),
+            h('button', {
+              type: 'button',
+              className: 'dsh-ps-btn dsh-ps-btn-sm',
+              disabled: joinBusy !== null,
+              onClick: function () { joinSuggestion(item) },
+            }, busy ? h(Spinner) : h(IconPlus, { size: 12 }), h('span', null, t('briefJoin')))))
+        }
       }
-      const doneFoot = doneToday.length > 0
-        ? h('div', { className: 'dsh-ps-today-foot' },
-          h('button', {
+      const briefSection = h('section', { className: 'dsh-ps-today-section dsh-ps-brief-card', 'data-state': briefState, 'aria-label': t('todayBrief') },
+        briefHead,
+        briefBody,
+        showSuggestions
+          ? h('div', { className: 'dsh-ps-brief-suggest' },
+            h('p', { className: 'dsh-ps-brief-suggest-title' }, t('briefSuggest')),
+            suggestionNodes)
+          : null)
+
+      // ---- block 2: 等你处理 (only when there is something to do) ------------
+      const waitingRaw = []
+      for (let i = 0; i < waiting.length; i += 1) waitingRaw.push({ kind: waiting[i].status, task: waiting[i] })
+      if (proposed > 0) waitingRaw.push({ kind: 'skills' })
+      const waitingShown = waitingRaw.slice(0, 3)
+      const waitingRows = []
+      for (let i = 0; i < waitingShown.length; i += 1) {
+        const entry = waitingShown[i]
+        const task = entry.task || null
+        const actions = []
+        if (entry.kind === 'skills') {
+          actions.push(h('button', {
+            key: 'candidates',
+            type: 'button',
+            className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-primary',
+            onClick: function () { props.onOpenReview('skills') },
+          }, h('span', null, t('waitViewCandidates'))))
+        } else {
+          if (entry.kind === 'blocked') {
+            actions.push(h('button', {
+              key: 'primary',
+              type: 'button',
+              className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-primary',
+              onClick: function (event) { stopAndOpen(task, event) },
+            }, h('span', null, t('openSession'))))
+          } else if (entry.kind === 'paused') {
+            actions.push(h('button', {
+              key: 'primary',
+              type: 'button',
+              className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-primary',
+              onClick: function (event) { stopAnd(task, 'resume', event) },
+            }, h('span', null, t('resume'))))
+          } else {
+            actions.push(h('button', {
+              key: 'primary',
+              type: 'button',
+              className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-primary',
+              onClick: function (event) { stopAnd(task, 'retry', event) },
+            }, h('span', null, t('retry'))))
+          }
+          actions.push(h('button', {
+            key: 'open',
             type: 'button',
             className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-ghost',
-            onClick: function () { props.onGoTasks() },
-          }, h('span', null, t('doneTotal', { count: doneToday.length })), h(IconArrowRight, { size: 13 })))
-        : null
-      const doneSection = h('section', { className: 'dsh-ps-today-section', 'aria-label': t('todayDone') },
-        h('div', { className: 'dsh-ps-today-sec-head' },
-          h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconCheckCircle, { size: 15 })),
-          h('h3', { className: 'dsh-ps-today-sec-title' }, t('todayDone')),
-          doneToday.length > 0 ? h('span', { className: 'dsh-ps-today-sec-count' }, String(doneToday.length)) : null),
-        doneNodes.length > 0
-          ? h('ul', { className: 'dsh-ps-today-list' }, doneNodes)
-          : h('p', { className: 'dsh-ps-today-empty' }, t('doneEmpty')),
-        doneFoot)
-
-      const briefActions = []
-      if (briefState === 'ready') {
-        briefActions.push(actionButton(t('briefView'), function () { props.onOpenBriefs() }, 'primary'))
-      } else if (briefState === 'generating') {
-        briefActions.push(h('button', { type: 'button', className: 'dsh-ps-btn dsh-ps-btn-sm', disabled: true },
-          h(Spinner), h('span', null, t('briefGenerating'))))
-      } else if (briefState === 'off') {
-        briefActions.push(actionButton(t('briefGoSettings'), function () { props.onGoSettings() }))
-      } else if (briefState === 'none') {
-        briefActions.push(h('button', {
-          type: 'button',
-          className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-primary',
-          disabled: briefGenerating,
-          onClick: function () { props.onGenerateBrief(today) },
-        }, h(IconPlay, { size: 13 }), h('span', null, t('briefGenerate'))))
+            onClick: function (event) { stopAndOpenDetail(task, event) },
+          }, h('span', null, t('view'))))
+        }
+        waitingRows.push(h('li', { key: task ? task.id : 'skill-candidates', className: 'dsh-ps-today-row', 'data-kind': entry.kind },
+          h('span', { className: 'dsh-ps-today-tag', 'data-kind': entry.kind },
+            entry.kind === 'blocked' ? t('waitBlocked')
+              : (entry.kind === 'paused' ? t('waitPaused')
+                : (entry.kind === 'failed' ? t('waitFailed') : t('skills')))),
+          h('div', { className: 'dsh-ps-today-main-col' },
+            h('span', { className: 'dsh-ps-today-title', title: entry.kind === 'skills' ? t('waitSkillCandidates', { count: proposed }) : task.title },
+              entry.kind === 'skills' ? t('waitSkillCandidates', { count: proposed }) : task.title)),
+          h('div', { className: 'dsh-ps-today-actions' }, actions)))
       }
-      let briefMeta = ''
-      if (briefState === 'unsupported') briefMeta = t('briefUnsupported')
-      else if (briefState === 'generating') briefMeta = t('briefGenerating')
-      else if (briefState === 'off') briefMeta = t('briefOff')
-      else if (briefState === 'ready') briefMeta = t('briefReady') + (todayBrief && todayBrief.updatedAt > 0 ? ' · ' + formatTime(todayBrief.updatedAt) : '')
-      else briefMeta = t('briefNoToday') + ' · ' + t('briefNextAt', { time: briefSettings.time })
-      const briefSection = h('section', { className: 'dsh-ps-today-section dsh-ps-brief-card', 'data-state': briefState, 'aria-label': t('briefCardTitle') },
-        h('div', { className: 'dsh-ps-today-sec-head' },
-          h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconFileText, { size: 15 })),
-          h('h3', { className: 'dsh-ps-today-sec-title' }, t('briefCardTitle')),
-          h('span', { className: 'dsh-ps-today-sec-grow' }),
-          todayBrief ? h('span', { className: 'dsh-ps-today-sec-count' }, today) : null),
-        h('p', { className: 'dsh-ps-brief-snippet' }, briefState === 'ready' ? (briefSnippet || t('briefReady')) : briefMeta),
-        briefActions.length > 0 ? h('div', { className: 'dsh-ps-brief-actions' }, briefActions) : null)
+      const waitingSection = waitingRaw.length > 0
+        ? h('section', { className: 'dsh-ps-today-section', 'aria-label': t('needsYou') },
+          h('div', { className: 'dsh-ps-today-sec-head' },
+            h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconBell, { size: 15 })),
+            h('h3', { className: 'dsh-ps-today-sec-title' }, t('needsYou')),
+            h('span', { className: 'dsh-ps-today-sec-count' }, String(waitingCount))),
+          h('ul', { className: 'dsh-ps-today-list' }, waitingRows),
+          waitingRaw.length > 3
+            ? h('p', { className: 'dsh-ps-today-more' }, t('moreItems', { count: waitingRaw.length - 3 }))
+            : null)
+        : null
 
-      const greeting = h('div', { className: 'dsh-ps-greet' },
-        h('div', { className: 'dsh-ps-greet-main' },
-          h('span', { className: 'dsh-ps-greet-date' },
-            h(IconCalendar, { size: 13 }),
-            h('span', null, (date.getMonth() + 1) + '月' + date.getDate() + '日 · ' + t(WEEKDAY_KEYS[date.getDay()]))),
-          h('p', { className: 'dsh-ps-greet-line' }, t('greetingMorning'))),
-        h('div', { className: 'dsh-ps-watch' },
-          h('span', { className: 'dsh-ps-watch-label' }, h(StatusDot, { status: running.length > 0 ? 'running' : 'pending' }), t('onWatch')),
-          h('div', { className: 'dsh-ps-watch-metrics' },
-            h('span', null, t('todayProcessed', { count: doneToday.length })),
-            h('span', null, t('todayNeedYouCount', { count: waitingCount })))))
+      // ---- block 3: 进行中 (only when something is running) -------------------
+      const runningShown = running.slice(0, 3)
+      const runningRows = []
+      for (let i = 0; i < runningShown.length; i += 1) {
+        const task = runningShown[i]
+        const elapsed = t('runningFor', { duration: formatDuration(taskDurationMs(task, now)) })
+        runningRows.push(h('li', { key: task.id, className: 'dsh-ps-today-row', 'data-kind': 'running' },
+          h(StatusDot, { status: 'running' }),
+          h('div', { className: 'dsh-ps-today-main-col' },
+            h('span', { className: 'dsh-ps-today-title', title: task.title }, task.title),
+            h('span', { className: 'dsh-ps-today-hint' }, elapsed)),
+          h('div', { className: 'dsh-ps-today-actions' },
+            h('button', {
+              key: 'open',
+              type: 'button',
+              className: 'dsh-ps-btn dsh-ps-btn-sm',
+              onClick: function () { props.onOpenSession(task) },
+            }, h('span', null, t('openSession'))),
+            h('button', {
+              key: 'pause',
+              type: 'button',
+              className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-ghost',
+              onClick: function (event) { stopAnd(task, 'pause', event) },
+            }, h('span', null, t('pause'))))))
+      }
+      const runningSection = runningShown.length > 0
+        ? h('section', { className: 'dsh-ps-today-section', 'aria-label': t('todayRunning') },
+          h('div', { className: 'dsh-ps-today-sec-head' },
+            h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconPlay, { size: 15 })),
+            h('h3', { className: 'dsh-ps-today-sec-title' }, t('todayRunning')),
+            h('span', { className: 'dsh-ps-today-sec-count' }, String(running.length))),
+          h('ul', { className: 'dsh-ps-today-list' }, runningRows))
+        : null
+
+      // ---- greeting / capture / footer --------------------------------------
+      const greetingRow = h('div', { className: 'dsh-ps-greet-row' },
+        h('span', { className: 'dsh-ps-greet-date' },
+          h(IconCalendar, { size: 13 }),
+          h('span', null, dateText)),
+        h('p', { className: 'dsh-ps-greet-line' }, t('greetingMorning')))
 
       const captureNode = h('div', { className: 'dsh-ps-capture' },
-        h('span', { className: 'dsh-ps-capture-icon', 'aria-hidden': 'true' }, h(IconPlus, { size: 16 })),
         h('input', {
           className: 'dsh-ps-capture-input',
           type: 'text',
@@ -7937,70 +7959,30 @@ window.__ModuleLoader__.load({
           className: 'dsh-ps-capture-submit',
           disabled: capturing || capture.trim() === '',
           onClick: submitCapture,
-        }, capturing ? h(Spinner) : h(IconPlus, { size: 14 }), h('span', null, capturing ? t('captureSaving') : t('captureSubmit'))))
+        }, capturing ? h(Spinner) : null, h('span', null, capturing ? t('captureSaving') : t('captureSubmit'))))
 
-      const webhook = settings && settings.webhook ? settings.webhook : null
-      let webhookLine = t('webhookLastLineIdle')
-      if (webhook && webhook.lastAt) {
-        webhookLine = t('webhookLastLine', {
-          status: webhook.lastStatus === 'ok' ? t('webhookStatusOk') : t('webhookStatusFailed'),
-          time: formatRelativeTime(t, webhook.lastAt, now),
-          event: webhookEventLabel(t, webhook.lastEvent || ''),
-        })
-      }
-      const ledgerCard = h('section', { className: 'dsh-ps-today-section dsh-ps-side-card', 'aria-label': t('todayLedger') },
-        h('div', { className: 'dsh-ps-today-sec-head' },
-          h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconLayers, { size: 15 })),
-          h('h3', { className: 'dsh-ps-today-sec-title' }, t('todayLedger'))),
-        h('div', { className: 'dsh-ps-ledger-grid' },
-          h('div', { className: 'dsh-ps-ledger-cell' },
-            h('span', { className: 'dsh-ps-ledger-value' }, String(doneToday.length)),
-            h('span', { className: 'dsh-ps-ledger-label' }, t('ledgerDone'))),
-          h('div', { className: 'dsh-ps-ledger-cell' },
-            h('span', { className: 'dsh-ps-ledger-value' }, String(running.length)),
-            h('span', { className: 'dsh-ps-ledger-label' }, t('ledgerRunning'))),
-          h('div', { className: 'dsh-ps-ledger-cell' },
-            h('span', { className: 'dsh-ps-ledger-value' }, String(waitingCount)),
-            h('span', { className: 'dsh-ps-ledger-label' }, t('ledgerWaiting'))),
-          h('div', { className: 'dsh-ps-ledger-cell' },
-            h('span', { className: 'dsh-ps-ledger-value' }, tokensToday > 0 ? formatTokens(tokensToday) : '—'),
-            h('span', { className: 'dsh-ps-ledger-label' }, t('ledgerTokens')))),
-        weekDone > 0 ? h('p', { className: 'dsh-ps-side-hint' }, t('ledgerWeek', { count: weekDone })) : null)
-
-      const shortcutsCard = h('section', { className: 'dsh-ps-today-section dsh-ps-side-card', 'aria-label': t('shortcuts') },
-        h('div', { className: 'dsh-ps-today-sec-head' },
-          h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconArrowRight, { size: 15 })),
-          h('h3', { className: 'dsh-ps-today-sec-title' }, t('shortcuts'))),
-        h('div', { className: 'dsh-ps-shortcuts' },
-          h('button', { type: 'button', className: 'dsh-ps-shortcut', onClick: function () { props.onGoTasks() } },
-            h(IconInbox, { size: 15 }), h('span', null, t('shortcutBoard'))),
-          h('button', { type: 'button', className: 'dsh-ps-shortcut', onClick: function () { props.onOpenReports() } },
-            h(IconFileText, { size: 15 }), h('span', null, t('shortcutReports'))),
-          h('button', { type: 'button', className: 'dsh-ps-shortcut', onClick: function () { props.onOpenEvolution('retrospective') } },
-            h(IconSpark, { size: 15 }), h('span', null, t('shortcutEvolution'))),
-          h('button', { type: 'button', className: 'dsh-ps-shortcut', onClick: function () { props.onOpenEvolution('lessons') } },
-            h(IconLayers, { size: 15 }), h('span', null, t('shortcutLessons')))))
-
-      const webhookCard = h('section', { className: 'dsh-ps-today-section dsh-ps-side-card', 'aria-label': t('webhookCardTitle') },
-        h('div', { className: 'dsh-ps-today-sec-head' },
-          h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconSend, { size: 15 })),
-          h('h3', { className: 'dsh-ps-today-sec-title' }, t('webhookCardTitle')),
-          h('span', { className: 'dsh-ps-today-sec-grow' }),
-          h('span', { className: 'dsh-ps-report-status-chip', 'data-tone': webhook && webhook.enabled ? 'ok' : 'idle' },
-            webhook && webhook.enabled ? t('webhookEnabled') : t('webhookDisabled'))),
-        h('div', { className: 'dsh-ps-webhook-line' }, h('span', null, webhookLine)),
+      const footer = h('div', { className: 'dsh-ps-today-foot' },
+        h('span', null, t('todayFooterDone', { count: doneTodayCount })),
+        h('span', { className: 'dsh-ps-today-foot-sep', 'aria-hidden': 'true' }, '·'),
         h('button', {
           type: 'button',
-          className: 'dsh-ps-btn dsh-ps-btn-sm',
-          onClick: function () { props.onOpenWebhookLog() },
-        }, h(IconFileText, { size: 13 }), h('span', null, t('webhookLog'))))
+          className: 'dsh-ps-foot-link',
+          onClick: function () { props.onOpenReview('journal') },
+        }, h('span', null, t('viewJournal'))),
+        h('span', { className: 'dsh-ps-today-foot-sep', 'aria-hidden': 'true' }, '·'),
+        h('button', {
+          type: 'button',
+          className: 'dsh-ps-foot-link',
+          onClick: function () { props.onGoTasks() },
+        }, h('span', null, t('shortcutBoard'))))
 
-      return h('div', { className: 'dsh-ps-today-shell' },
-        greeting,
+      return h('div', { className: 'dsh-ps-today-page' },
+        greetingRow,
         captureNode,
-        h('div', { className: 'dsh-ps-today' },
-          h('div', { className: 'dsh-ps-today-main' }, briefSection, waitingSection, focusSection, runningSection, doneSection),
-          h('div', { className: 'dsh-ps-today-side' }, ledgerCard, shortcutsCard, webhookCard)))
+        briefSection,
+        waitingSection,
+        runningSection,
+        footer)
     }
 
     function BriefsDrawer(props) {
@@ -8339,6 +8321,14 @@ window.__ModuleLoader__.load({
       h('div', { className: 'dsh-ps-notif-foot' },
         h('button', {
           type: 'button',
+          className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-ghost',
+          onClick: function () {
+            if (typeof props.onOpenWebhookLog === 'function') props.onOpenWebhookLog()
+          },
+        }, h(IconSend, { size: 13 }), h('span', null, t('notificationLogTitle'))),
+        h('span', { className: 'dsh-ps-section-grow' }),
+        h('button', {
+          type: 'button',
           className: 'dsh-ps-btn dsh-ps-btn-sm',
           onClick: props.onMarkAllRead,
         }, h(IconCheck, { size: 13 }), h('span', null, t('markAllRead')))))
@@ -8451,7 +8441,7 @@ window.__ModuleLoader__.load({
       const items = reportsState.items
       const phase = reportsState.phase
 
-      useDialogA11y(dialogRef, props.onClose, true, closeBtnRef)
+      useDialogA11y(dialogRef, props.onClose, !props.embedded, closeBtnRef)
 
       React.useEffect(function () {
         void store.refreshReports()
@@ -8607,6 +8597,46 @@ window.__ModuleLoader__.load({
         headExtra = h('span', { className: 'dsh-ps-report-generating' }, h(Spinner), h('span', null, t('reportGenerating')))
       }
 
+      if (props.embedded === true) {
+        return h('div', { className: 'dsh-ps-review-embedded' },
+          inlineError ? h('div', { className: 'dsh-ps-inline-error', role: 'alert', style: { padding: '8px 20px 0' } }, inlineError) : null,
+          h('div', { className: 'dsh-ps-report-body' },
+          h('div', { className: 'dsh-ps-report-list', 'aria-label': t('reportsTitle') }, listNodes),
+          h('div', { className: 'dsh-ps-report-main' },
+            h('div', { className: 'dsh-ps-report-main-head' },
+              h('div', { className: 'dsh-ps-report-main-title' },
+                selectedDate !== null ? selectedDate : t('reportNoSelection'),
+                selectedDate !== null ? h('span', { className: 'dsh-ps-report-main-sub' },
+                  selectedItem && selectedItem.bytes > 0 ? ' · ' + formatBytes(selectedItem.bytes) : '') : null),
+              h('span', { className: 'dsh-ps-section-grow' }),
+              selectedDate !== null
+                ? h('button', {
+                  type: 'button',
+                  className: 'dsh-ps-btn dsh-ps-btn-sm',
+                  disabled: generating,
+                  title: t('reportRegenerating'),
+                  onClick: function () { generate(selectedDate) },
+                }, selectedGenerating ? h(Spinner) : h(IconRefresh, { size: 13 }),
+                h('span', null, selectedGenerating ? t('reportGenerating') : t('reportRegenerating')))
+                : null,
+              h('button', {
+                type: 'button',
+                className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-primary',
+                disabled: generating,
+                onClick: function () { generate(today) },
+              }, todayGenerating ? h(Spinner) : h(IconPlay, { size: 13 }),
+              h('span', null, todayGenerating ? t('reportGenerating') : t('reportGenerate'))),
+              h('button', {
+                type: 'button',
+                className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-ghost',
+                'aria-label': t('reportRefresh'),
+                title: t('reportRefresh'),
+                disabled: phase === 'loading',
+                onClick: refreshAll,
+              }, h(IconRefresh, { size: 14 }))),
+            h('div', { className: 'dsh-ps-report-content-wrap' }, mainContent))))
+      }
+
       return h('div', { className: 'dsh-ps-drawer-layer' },
         h('div', { className: 'dsh-ps-drawer-mask', 'aria-hidden': 'true', onClick: props.onClose }),
         h('div', {
@@ -8685,7 +8715,11 @@ window.__ModuleLoader__.load({
       const meta = snap.evolution || defaultEvolutionMeta()
       const dialogRef = React.useRef(null)
       const closeBtnRef = React.useRef(null)
-      const initialTab = EVOLUTION_TAB_KEYS.indexOf(props.initialTab) >= 0 ? props.initialTab : 'retrospective'
+      const embedded = props.embedded === true
+      const embeddedTab = EVOLUTION_TAB_KEYS.indexOf(props.embeddedTab) >= 0 ? props.embeddedTab : null
+      const initialTab = embedded && embeddedTab !== null
+        ? embeddedTab
+        : (EVOLUTION_TAB_KEYS.indexOf(props.initialTab) >= 0 ? props.initialTab : 'retrospective')
       const [tab, setTab] = React.useState(initialTab)
       const [data, setData] = React.useState({
         phase: 'idle',
@@ -8714,7 +8748,7 @@ window.__ModuleLoader__.load({
       const [skillContents, setSkillContents] = React.useState({})
       const [busy, setBusy] = React.useState(null)
 
-      useDialogA11y(dialogRef, props.onClose, true, closeBtnRef)
+      useDialogA11y(dialogRef, props.onClose, !embedded, closeBtnRef)
 
       function loadData(silent) {
         if (!silent) setInlineError(null)
@@ -9493,6 +9527,43 @@ window.__ModuleLoader__.load({
         }, t('retrospectiveError') + ' — ' + headStatus.lastError)
         : null
 
+      if (embedded) {
+        return h('div', { className: 'dsh-ps-review-embedded' },
+          h('div', { className: 'dsh-ps-review-toolbar' },
+            h('span', { className: 'dsh-ps-review-toolbar-status' },
+              h('span', { className: 'dsh-ps-report-status-chip', 'data-tone': evolutionStatusTone(headStatus) },
+                generating ? h(Spinner) : null,
+                h('span', null, generating ? t('evolutionGenerating') : evolutionStatusText(t, headStatus))),
+              headStatus && headStatus.lastDate
+                ? h('span', null, t('evolutionLast') + ' · ' + headStatus.lastDate)
+                : null),
+            h('span', { className: 'dsh-ps-review-toolbar-grow' }),
+            h('button', {
+              type: 'button',
+              className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-primary',
+              disabled: generating,
+              onClick: generate,
+            }, generating ? h(Spinner) : h(IconPlay, { size: 13 }),
+            h('span', null, generating ? t('retrospectiveGenerating') : t('retrospectiveNow'))),
+            h('button', {
+              type: 'button',
+              className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-ghost',
+              'aria-label': t('retrospectiveRefresh'),
+              title: t('retrospectiveRefresh'),
+              disabled: phase === 'loading',
+              onClick: refreshRetrospective,
+            }, h(IconRefresh, { size: 14 }))),
+          inlineError
+            ? h('div', { className: 'dsh-ps-inline-error', role: 'alert', style: { padding: '8px 20px 0' } }, inlineError)
+            : null,
+          lastErrorNode,
+          h('div', {
+            className: 'dsh-ps-evo-panel',
+            role: 'tabpanel',
+            tabIndex: 0,
+          }, panelContent))
+      }
+
       return h('div', { className: 'dsh-ps-drawer-layer' },
         h('div', { className: 'dsh-ps-drawer-mask', 'aria-hidden': 'true', onClick: props.onClose }),
         h('div', {
@@ -9516,6 +9587,119 @@ window.__ModuleLoader__.load({
           'aria-labelledby': 'dsh-ps-evo-tab-' + tab,
           tabIndex: 0,
         }, panelContent)))
+    }
+
+    // ------------------------------------------------------------------ review drawer (v0.7)
+
+    // One merged drawer: 日志 / 复盘 / 经验 / 技能. The journal tab embeds the
+    // work-log list (ReportsDrawer in embedded mode), the other three tabs embed
+    // the retrospective panels (EvolutionDrawer in embedded mode) so all the
+    // existing generate / adopt / lesson actions keep working unchanged.
+    function ReviewDrawer(props) {
+      const t = props.t
+      const store = props.store
+      const snap = useStoreSnapshot(store)
+      const initialTab = REVIEW_TAB_KEYS.indexOf(props.initialTab) >= 0 ? props.initialTab : 'journal'
+      const [tab, setTab] = React.useState(initialTab)
+      const dialogRef = React.useRef(null)
+      const closeBtnRef = React.useRef(null)
+      useDialogA11y(dialogRef, props.onClose, true, closeBtnRef)
+      const proposed = snap.evolution ? snap.evolution.proposedSkillCount : 0
+      const labels = { journal: t('journalTab'), retrospective: t('tabRetro'), lessons: t('tabLessons'), skills: t('tabSkills') }
+      const tabIds = {}
+      for (let i = 0; i < REVIEW_TAB_KEYS.length; i += 1) tabIds[REVIEW_TAB_KEYS[i]] = 'dsh-ps-review-tab-' + REVIEW_TAB_KEYS[i]
+
+      function switchTab(next) {
+        setTab(next)
+      }
+
+      function onTabKeyDown(event, index) {
+        if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return
+        event.preventDefault()
+        const delta = event.key === 'ArrowRight' ? 1 : -1
+        switchTab(REVIEW_TAB_KEYS[(index + delta + REVIEW_TAB_KEYS.length) % REVIEW_TAB_KEYS.length])
+      }
+
+      const tabNodes = []
+      for (let i = 0; i < REVIEW_TAB_KEYS.length; i += 1) {
+        const key = REVIEW_TAB_KEYS[i]
+        const selected = tab === key
+        tabNodes.push(h('button', {
+          key: key,
+          type: 'button',
+          role: 'tab',
+          id: tabIds[key],
+          className: 'dsh-ps-review-tab',
+          'aria-selected': selected ? 'true' : 'false',
+          'aria-controls': 'dsh-ps-review-panel',
+          'data-review-tab': key,
+          tabIndex: selected ? 0 : -1,
+          onClick: function () { setTab(key) },
+          onKeyDown: function (event) { onTabKeyDown(event, i) },
+        },
+        h('span', null, labels[key]),
+        key === 'skills' && proposed > 0
+          ? h('span', { className: 'dsh-ps-review-count', 'aria-hidden': 'true' }, proposed > 9 ? '9+' : String(proposed))
+          : null))
+      }
+
+      let panel = null
+      if (tab === 'journal') {
+        panel = h(ReportsDrawer, {
+          key: 'journal',
+          embedded: true,
+          ctx: props.ctx,
+          store: store,
+          t: t,
+          addToast: props.addToast,
+          onClose: props.onClose,
+        })
+      } else {
+        panel = h(EvolutionDrawer, {
+          key: tab,
+          embedded: true,
+          embeddedTab: tab,
+          ctx: props.ctx,
+          store: store,
+          t: t,
+          addToast: props.addToast,
+          onClose: props.onClose,
+        })
+      }
+
+      return h('div', { className: 'dsh-ps-drawer-layer' },
+        h('div', { className: 'dsh-ps-drawer-mask', 'aria-hidden': 'true', onClick: props.onClose }),
+        h('div', {
+          className: 'dsh-ps-drawer dsh-ps-review-drawer',
+          role: 'dialog',
+          'aria-modal': 'true',
+          'aria-labelledby': 'dsh-ps-review-title',
+          ref: dialogRef,
+          tabIndex: -1,
+        },
+        h('div', { className: 'dsh-ps-drawer-head' },
+          h('span', { className: 'dsh-ps-drawer-avatar', 'data-status': 'done', 'aria-hidden': 'true' },
+            h(IconCalendar, { size: 20 })),
+          h('div', { className: 'dsh-ps-drawer-titles' },
+            h('h2', { className: 'dsh-ps-drawer-title', id: 'dsh-ps-review-title' }, t('review')),
+            h('div', { className: 'dsh-ps-drawer-badges' },
+              h('span', { className: 'dsh-ps-section-hint' }, t('reviewSub')))),
+          h('button', {
+            type: 'button',
+            ref: closeBtnRef,
+            className: 'dsh-ps-btn dsh-ps-btn-ghost dsh-ps-btn-icon',
+            'aria-label': t('close'),
+            title: t('close'),
+            onClick: props.onClose,
+          }, h(IconClose, { size: 16 }))),
+        h('div', { className: 'dsh-ps-review-tabs', role: 'tablist', 'aria-label': t('review') }, tabNodes),
+        h('div', {
+          className: 'dsh-ps-review-body',
+          role: 'tabpanel',
+          id: 'dsh-ps-review-panel',
+          'aria-labelledby': tabIds[tab],
+          tabIndex: 0,
+        }, panel)))
     }
 
     // ------------------------------------------------------------------ board
@@ -9545,17 +9729,11 @@ window.__ModuleLoader__.load({
       return next
     }
 
-    function matchesSearch(task, term) {
-      if (term === '') return true
-      const haystack = (task.title + '\n' + task.prompt + '\n' + task.cwd + '\n' + task.sessionId).toLowerCase()
-      return haystack.indexOf(term) >= 0
-    }
-
     // ---- per-column filter state (v6): every column owns its own search term
     // and its own status/priority/group/source filters; nothing is global.
 
     function emptyColumnFilter() {
-      return { query: '', status: 'all', priority: 'all', source: 'all', open: false }
+      return { status: 'all', priority: 'all', source: 'all', open: false }
     }
 
     function createColumnFilterState() {
@@ -9566,8 +9744,7 @@ window.__ModuleLoader__.load({
 
     function isColumnFilterActive(filter) {
       if (!filter || typeof filter !== 'object') return false
-      const query = typeof filter.query === 'string' ? filter.query.trim() : ''
-      return query !== '' || filter.status !== 'all' || filter.priority !== 'all' || filter.source !== 'all'
+      return filter.status !== 'all' || filter.priority !== 'all' || filter.source !== 'all'
     }
 
     function isColumnFilterMenuActive(filter) {
@@ -9587,8 +9764,6 @@ window.__ModuleLoader__.load({
 
     function matchesColumnFilter(task, filter, columnKey) {
       if (!task || !filter || typeof filter !== 'object') return true
-      const term = typeof filter.query === 'string' ? filter.query.trim().toLowerCase() : ''
-      if (term !== '' && !matchesSearch(task, term)) return false
       if (columnHasStatusFilter(columnKey) && filter.status !== 'all' && task.status !== filter.status) return false
       if (filter.priority !== 'all' && normalizePriority(task.priority) !== filter.priority) return false
       if (filter.source !== 'all') {
@@ -9618,10 +9793,10 @@ window.__ModuleLoader__.load({
       const [publishOpen, setPublishOpen] = React.useState(false)
       const [publishCwd, setPublishCwd] = React.useState('')
       const [publishMode, setPublishMode] = React.useState('single')
-      const [reportsOpen, setReportsOpen] = React.useState(false)
-      const [evolutionOpen, setEvolutionOpen] = React.useState(false)
-      const evolutionButtonRef = React.useRef(null)
-      const evolutionWasOpenRef = React.useRef(false)
+      const [reviewOpen, setReviewOpen] = React.useState(false)
+      const [reviewTab, setReviewTab] = React.useState('journal')
+      const reviewButtonRef = React.useRef(null)
+      const reviewWasOpenRef = React.useRef(false)
       const [selectedId, setSelectedId] = React.useState(null)
       const [editingId, setEditingId] = React.useState(null)
       const [dragId, setDragId] = React.useState(null)
@@ -9634,7 +9809,7 @@ window.__ModuleLoader__.load({
       const [briefsOpen, setBriefsOpen] = React.useState(false)
       const [notifOpen, setNotifOpen] = React.useState(false)
       const [webhookLogOpen, setWebhookLogOpen] = React.useState(false)
-      const [evolutionTab, setEvolutionTab] = React.useState('retrospective')
+      const [globalQuery, setGlobalQuery] = React.useState('')
       const [lastSeen, setLastSeen] = React.useState(readLastSeenTime)
       const [captureBusy, setCaptureBusy] = React.useState(false)
       const [focusChatId, setFocusChatId] = React.useState(null)
@@ -9671,19 +9846,19 @@ window.__ModuleLoader__.load({
         if (briefs.phase === 'idle') void store.refreshBriefs()
       }, [view, snap.briefs ? snap.briefs.phase : 'idle', snap.briefs ? snap.briefs.supported : true, store])
 
-      // Restore focus to the header entry when the evolution drawer closes.
+      // Restore focus to the header entry when the merged review drawer closes.
       React.useEffect(function () {
-        if (evolutionOpen) {
-          evolutionWasOpenRef.current = true
+        if (reviewOpen) {
+          reviewWasOpenRef.current = true
           return
         }
-        if (!evolutionWasOpenRef.current) return
-        evolutionWasOpenRef.current = false
-        const node = evolutionButtonRef.current
+        if (!reviewWasOpenRef.current) return
+        reviewWasOpenRef.current = false
+        const node = reviewButtonRef.current
         if (node && typeof node.focus === 'function') {
           try { node.focus() } catch (error) { /* focus is progressive enhancement */ }
         }
-      }, [evolutionOpen])
+      }, [reviewOpen])
 
       React.useEffect(function () {
         if (selectedId === null) return
@@ -9826,9 +10001,44 @@ window.__ModuleLoader__.load({
         setSelectedId(task.id)
       }
 
-      function openEvolution(tab) {
-        setEvolutionTab(EVOLUTION_TAB_KEYS.indexOf(tab) >= 0 ? tab : 'retrospective')
-        setEvolutionOpen(true)
+      function openReview(tab) {
+        const known = ['journal', 'retrospective', 'lessons', 'skills']
+        setReviewTab(known.indexOf(tab) >= 0 ? tab : 'journal')
+        setReviewOpen(true)
+        setNotifOpen(false)
+      }
+
+      // "今天建议" → create a queued task with the suggestion title/prompt.
+      function joinSuggestion(suggestion) {
+        const item = suggestion && typeof suggestion === 'object' ? suggestion : null
+        if (!item || typeof item.title !== 'string' || item.title.trim() === '') {
+          return Promise.resolve({ ok: false, error: null })
+        }
+        const guess = lastDir !== '' ? lastDir : guessDefaultDirectory(ctx)
+        if (!isAbsolutePath(guess)) {
+          const message = t('captureNoCwd')
+          addToast(message, 'error')
+          return Promise.resolve({ ok: false, error: message })
+        }
+        return store.publish({
+          title: item.title,
+          prompt: typeof item.prompt === 'string' && item.prompt !== '' ? item.prompt : item.title,
+          cwd: guess,
+          status: 'pending',
+          priority: normalizePriority(item.priority),
+        }).then(function (result) {
+          if (result.ok) {
+            setLastDir(guess)
+            addToast(t('briefJoined', { title: item.title }), 'success')
+            void store.refresh()
+          } else if (result.error) {
+            addToast(result.error, 'error')
+          }
+          return result
+        }, function (error) {
+          addToast(t('publishFailed') + ' — ' + (error && error.message ? error.message : t('unknownError')), 'error')
+          return { ok: false, error: null }
+        })
       }
 
       function markNotificationsRead() {
@@ -10144,9 +10354,15 @@ window.__ModuleLoader__.load({
         })
       }
 
+      // v0.7 task view: one status bar + one global search over the whole board.
+      const globalTerm = globalQuery.trim().toLowerCase()
+      const boardTasks = globalTerm === ''
+        ? tasks
+        : tasks.filter(function (task) { return matchesGlobalSearch(task, globalTerm) })
+
       const columnTotals = { idea: [], pending: [], claimed: [], ended: [] }
-      for (let i = 0; i < tasks.length; i += 1) {
-        const task = tasks[i]
+      for (let i = 0; i < boardTasks.length; i += 1) {
+        const task = boardTasks[i]
         columnTotals[columnKeyOfStatus(task.status)].push(task)
       }
       columnTotals.ended.sort(function (a, b) { return taskTimestamp(b) - taskTimestamp(a) })
@@ -10158,15 +10374,12 @@ window.__ModuleLoader__.load({
         columnFiltersReady[key] = filter
         const columnTasks = filterTasksForColumn(columnTotals[key], filter, key)
         const menuActive = isColumnFilterMenuActive(filter)
-        const searchActive = typeof filter.query === 'string' && filter.query.trim() !== ''
-        const filtered = menuActive || searchActive
         columnViews[key] = {
           tasks: columnTasks,
           total: columnTotals[key].length,
-          filtered: filtered,
-          searchActive: searchActive,
+          filtered: menuActive,
           menuActive: menuActive,
-          countLabel: filtered ? String(columnTasks.length) + '/' + String(columnTotals[key].length) : String(columnTotals[key].length),
+          countLabel: menuActive ? String(columnTasks.length) + '/' + String(columnTotals[key].length) : String(columnTotals[key].length),
         }
       }
 
@@ -10209,8 +10422,6 @@ window.__ModuleLoader__.load({
           onFilterChange: function (patch) { updateColumnFilter(column, patch) },
           onClearFilters: function () { clearColumn(column) },
           onCloseFilter: function () { updateColumnFilter(column, { open: false }) },
-          onSearch: function (value) { updateColumnFilter(column, { query: value }) },
-          onClearSearch: function () { updateColumnFilter(column, { query: '' }) },
         }
       }
 
@@ -10224,30 +10435,45 @@ window.__ModuleLoader__.load({
       const selectedTask = selectedId === null ? null : (taskById.get(selectedId) || null)
       const editingTask = editingId === null ? null : (taskById.get(editingId) || null)
       const chainSource = selectedTask && selectedTask.chainFrom !== '' ? (taskById.get(selectedTask.chainFrom) || null) : null
-      const runningLimit = settings ? settings.concurrency : null
 
-      // HUD KPI strip data (v6.5) — counts come from the store snapshot; the
-      // 处理中 module also folds paused/blocked in and shows the concurrency bar.
-      const kpiNow = Date.now()
-      const processingCount = snap.counts.running + snap.counts.paused + snap.counts.blocked
-      const concurrencyLimit = settings ? settings.concurrency : 0
       const autoStartOn = !!(settings && settings.autoStart)
-      const runningRatio = concurrencyLimit > 0 ? Math.min(1, snap.runningCount / concurrencyLimit) : 0
-      let doneTodayCount = 0
-      let failedTodayCount = 0
-      for (let i = 0; i < tasks.length; i += 1) {
-        const task = tasks[i]
-        if (task.status === 'done' && isSameLocalDay(task.endedAt || task.updatedAt, kpiNow)) doneTodayCount += 1
-        else if (task.status === 'failed' && isSameLocalDay(task.endedAt || task.updatedAt, kpiNow)) failedTodayCount += 1
-      }
-      const kpiIdeaSub = t('kpiIdeaSub')
-      const kpiPendingSub = autoStartOn ? t('kpiAutoStartOn') : t('kpiAutoStartOff')
-      const kpiProcessingSub = t('kpiConcurrency', {
-        running: String(snap.runningCount),
-        limit: runningLimit === null ? '—' : String(runningLimit),
-      })
-      const kpiDoneSub = t('kpiTodayPlus', { count: String(doneTodayCount) })
-      const kpiFailedSub = failedTodayCount > 0 ? t('kpiTodayPlus', { count: String(failedTodayCount) }) : t('kpiTodayNone')
+      const processingCount = snap.counts.running + snap.counts.paused + snap.counts.blocked
+      const endedCount = snap.counts.done + snap.counts.failed + snap.counts.cancelled
+      const taskbarNode = h('div', { className: 'dsh-ps-taskbar' },
+        h('div', { className: 'dsh-ps-taskbar-counts', role: 'group', 'aria-label': t('kpiGroupLabel') },
+          h('span', { key: 'idea' }, t('kpiIdea'), ' ', h('strong', null, String(snap.counts.idea))),
+          h('span', { key: 'pending' }, t('kpiPending'), ' ', h('strong', null, String(snap.counts.pending))),
+          h('span', { key: 'processing' }, t('kpiProcessing'), ' ', h('strong', null, String(processingCount))),
+          h('span', { key: 'ended' }, t('columnEnded'), ' ', h('strong', null, String(endedCount)))),
+        h('span', { className: 'dsh-ps-taskbar-grow' }),
+        h('span', { className: 'dsh-ps-taskbar-switch' },
+          h(Switch, {
+            checked: autoStartOn,
+            disabled: !settings || autoBusy,
+            label: t('autoStart'),
+            onChange: toggleAutoStart,
+          }),
+          h('span', null, t('autoStart'))),
+        h('div', { className: 'dsh-ps-taskbar-search' },
+          h('span', { className: 'dsh-ps-taskbar-search-icon', 'aria-hidden': 'true' }, h(IconSearch, { size: 13 })),
+          h('input', {
+            className: 'dsh-ps-taskbar-input',
+            type: 'search',
+            value: globalQuery,
+            placeholder: t('searchPlaceholder'),
+            'aria-label': t('searchPlaceholder'),
+            spellCheck: false,
+            onChange: function (event) { setGlobalQuery(event.target.value) },
+          }),
+          globalQuery !== ''
+            ? h('button', {
+              type: 'button',
+              className: 'dsh-ps-taskbar-clear',
+              'aria-label': t('searchClear'),
+              title: t('searchClear'),
+              onClick: function () { setGlobalQuery('') },
+            }, h(IconClose, { size: 12 }))
+            : null))
 
       function renderCard(task, index, columnKey) {
         return h(TaskCard, {
@@ -10426,52 +10652,6 @@ window.__ModuleLoader__.load({
       }
 
       const headerActions = h('div', { className: 'dsh-ps-header-actions' },
-        h('span', { className: 'dsh-ps-switch-row' },
-          h(Switch, {
-            checked: !!(settings && settings.autoStart),
-            disabled: !settings || autoBusy,
-            label: t('autoStart'),
-            onChange: toggleAutoStart,
-          }),
-          h('span', null, t('autoStart'))),
-        h('button', {
-          type: 'button',
-          className: 'dsh-ps-btn',
-          'aria-haspopup': 'dialog',
-          'aria-expanded': reportsOpen ? 'true' : 'false',
-          onClick: function () { setReportsOpen(true) },
-        }, h(IconFileText, { size: 15 }), h('span', null, t('dailyReport'))),
-        // v9: retrospective entry; the badge counts skill candidates to adopt.
-        h('button', {
-          type: 'button',
-          ref: evolutionButtonRef,
-          className: 'dsh-ps-btn dsh-ps-evo-entry',
-          'aria-haspopup': 'dialog',
-          'aria-expanded': evolutionOpen ? 'true' : 'false',
-          'aria-label': proposedSkillCount > 0
-            ? t('evolutionButton') + ' · ' + t('skillCandidateBadge', { count: proposedSkillCount })
-            : t('evolutionButton'),
-          title: proposedSkillCount > 0
-            ? t('skillCandidateBadge', { count: proposedSkillCount })
-            : t('evolutionButton'),
-          onClick: function () { openEvolution('retrospective') },
-        }, h(IconSpark, { size: 15 }), h('span', null, t('evolutionButton')),
-        proposedSkillCount > 0
-          ? h('span', { className: 'dsh-ps-evo-entry-badge', 'aria-hidden': 'true' },
-            proposedSkillCount > 9 ? '9+' : String(proposedSkillCount))
-          : null),
-        h('button', {
-          type: 'button',
-          className: 'dsh-ps-btn',
-          'aria-haspopup': 'dialog',
-          'aria-expanded': settingsOpen ? 'true' : 'false',
-          onClick: function () { setSettingsOpen(true) },
-        }, h(IconSliders, { size: 15 }), h('span', null, t('settings'))),
-        h('button', {
-          type: 'button',
-          className: 'dsh-ps-btn dsh-ps-btn-primary',
-          onClick: function () { openPublish('single') },
-        }, h(IconPlus, { size: 16 }), h('span', null, t('publish'))),
         h('div', { className: 'dsh-ps-notif-wrap' },
           h('button', {
             type: 'button',
@@ -10498,22 +10678,47 @@ window.__ModuleLoader__.load({
               onOpenTask: openCard,
               onOpenTaskChat: openTaskChat,
               onMarkAllRead: markNotificationsRead,
+              onOpenWebhookLog: function () { setNotifOpen(false); setWebhookLogOpen(true) },
               onClose: function () { setNotifOpen(false) },
             })
-            : null))
+            : null),
+        h('button', {
+          type: 'button',
+          ref: reviewButtonRef,
+          className: 'dsh-ps-btn dsh-ps-evo-entry',
+          'aria-haspopup': 'dialog',
+          'aria-expanded': reviewOpen ? 'true' : 'false',
+          'aria-label': proposedSkillCount > 0
+            ? t('review') + ' · ' + t('skillCandidateBadge', { count: proposedSkillCount })
+            : t('review'),
+          title: proposedSkillCount > 0
+            ? t('skillCandidateBadge', { count: proposedSkillCount })
+            : t('review'),
+          onClick: function () { openReview('journal') },
+        }, h(IconCalendar, { size: 15 }), h('span', { className: 'dsh-ps-btn-label' }, t('review')),
+        proposedSkillCount > 0
+          ? h('span', { className: 'dsh-ps-evo-entry-badge', 'aria-hidden': 'true' },
+            proposedSkillCount > 9 ? '9+' : String(proposedSkillCount))
+          : null),
+        h('button', {
+          type: 'button',
+          className: 'dsh-ps-btn',
+          'aria-haspopup': 'dialog',
+          'aria-expanded': settingsOpen ? 'true' : 'false',
+          'aria-label': t('settings'),
+          onClick: function () { setSettingsOpen(true) },
+        }, h(IconSliders, { size: 15 }), h('span', { className: 'dsh-ps-btn-label' }, t('settings'))),
+        h('button', {
+          type: 'button',
+          className: 'dsh-ps-btn dsh-ps-btn-primary',
+          'aria-label': t('publish'),
+          onClick: function () { openPublish('single') },
+        }, h(IconPlus, { size: 16 }), h('span', { className: 'dsh-ps-btn-label' }, t('publish'))))
 
       const headerNode = h('header', { className: 'dsh-ps-header' },
         h('div', { className: 'dsh-ps-header-main' },
           h('div', { className: 'dsh-ps-title-row' },
-            h('h1', { className: 'dsh-ps-title' }, t('panelTitle')),
-            h('span', {
-              className: 'dsh-ps-runpill',
-              'aria-label': t('runningPill', { running: snap.runningCount, limit: runningLimit === null ? '—' : runningLimit }),
-            },
-            h(StatusDot, { status: snap.runningCount > 0 ? 'running' : 'pending' }),
-            h('span', null, t('running') + ' '),
-            h('strong', null, String(snap.runningCount)),
-            h('span', null, ' / ' + (runningLimit === null ? '—' : String(runningLimit))))),
+            h('h1', { className: 'dsh-ps-title' }, t('panelTitle'))),
           h('p', { className: 'dsh-ps-subtitle' }, t('subtitle'))),
         h('div', { className: 'dsh-ps-header-mid' },
           h('div', { className: 'dsh-ps-views', role: 'tablist', 'aria-label': t('viewSwitchAria') },
@@ -10533,40 +10738,29 @@ window.__ModuleLoader__.load({
             }, h('span', null, t('viewTasks'))))),
         headerActions)
 
-      const statsNode = h('div', { className: 'dsh-ps-stats', role: 'group', 'aria-label': t('kpiGroupLabel') },
-        h(KpiModule, { metric: 'idea', tone: 'idea', icon: IconSpark, label: t('kpiIdea'), value: String(snap.counts.idea), sub: kpiIdeaSub, t: t }),
-        h(KpiModule, { metric: 'pending', tone: 'pending', icon: IconInbox, label: t('kpiPending'), value: String(snap.counts.pending), sub: kpiPendingSub, t: t }),
-        h(KpiModule, { metric: 'processing', tone: 'processing', icon: IconPlay, label: t('kpiProcessing'), value: String(processingCount), sub: kpiProcessingSub, pulse: snap.runningCount > 0, progress: { ratio: runningRatio, active: snap.runningCount > 0 }, t: t }),
-        h(KpiModule, { metric: 'done', tone: 'done', icon: IconCheckCircle, label: t('kpiDone'), value: String(snap.counts.done), sub: kpiDoneSub, t: t }),
-        h(KpiModule, { metric: 'failed', tone: 'failed', icon: IconAlert, label: t('kpiFailed'), value: String(snap.counts.failed), sub: kpiFailedSub, t: t }))
-
       const todayNode = h(TodayView, {
         t: t,
         store: store,
-        ctx: ctx,
         snap: snap,
         now: now,
-        lastDir: lastDir,
-        captureBusy: captureBusy,
         onCapture: captureTask,
         onOpenTask: openCard,
         onOpenTaskChat: openTaskChat,
         onOpenSession: openSession,
         onAction: runCardAction,
         onEdit: openEdit,
+        onJoinSuggestion: joinSuggestion,
         onOpenBriefs: function () { setBriefsOpen(true) },
         onGenerateBrief: generateBriefNow,
         onGoSettings: function () { setSettingsOpen(true) },
         onGoTasks: function () { setView('tasks'); setNotifOpen(false) },
-        onOpenReports: function () { setReportsOpen(true) },
-        onOpenEvolution: openEvolution,
-        onOpenWebhookLog: function () { setWebhookLogOpen(true) },
+        onOpenReview: openReview,
       })
 
       const pageBody = view === 'today'
         ? todayNode
         : h(React.Fragment, null,
-          statsNode,
+          taskbarNode,
           reorderBusy
             ? h('div', { className: 'dsh-ps-settings-saving', role: 'status' }, h(Spinner), h('span', null, t('reorderSaving')))
             : null,
@@ -10647,16 +10841,6 @@ window.__ModuleLoader__.load({
             onClose: function () { setSettingsOpen(false) },
           })
           : null,
-        reportsOpen
-          ? h(ReportsDrawer, {
-            key: 'reports-drawer',
-            ctx: ctx,
-            store: store,
-            t: t,
-            addToast: addToast,
-            onClose: function () { setReportsOpen(false) },
-          })
-          : null,
         briefsOpen
           ? h(BriefsDrawer, {
             key: 'briefs-drawer',
@@ -10667,15 +10851,15 @@ window.__ModuleLoader__.load({
             onClose: function () { setBriefsOpen(false) },
           })
           : null,
-        evolutionOpen
-          ? h(EvolutionDrawer, {
-            key: 'evolution-drawer',
+        reviewOpen
+          ? h(ReviewDrawer, {
+            key: 'review-drawer-' + reviewTab,
             ctx: ctx,
             store: store,
             t: t,
-            initialTab: evolutionTab,
+            initialTab: reviewTab,
             addToast: addToast,
-            onClose: function () { setEvolutionOpen(false) },
+            onClose: function () { setReviewOpen(false) },
           })
           : null,
         webhookLogOpen

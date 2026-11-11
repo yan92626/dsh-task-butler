@@ -109,7 +109,7 @@ const tokens = new Set([...client.matchAll(/--dsw-[a-z0-9-]+/g)].map(m => m[0]))
 const allowed = new Set([
   '--dsw-alias-bg-base', '--dsw-alias-bg-layer-1', '--dsw-alias-bg-layer-2', '--dsw-alias-bg-overlay',
   '--dsw-alias-border-l1', '--dsw-alias-border-l2', '--dsw-alias-brand-primary',
-  '--dsw-alias-label-primary', '--dsw-alias-label-secondary',
+  '--dsw-alias-label-primary', '--dsw-alias-label-secondary', '--dsw-alias-link',
   '--dsw-alias-state-error-primary', '--dsw-alias-state-idle-primary',
   '--dsw-alias-state-success-primary', '--dsw-alias-state-warn-primary',
   '--dsw-specific-sidebar-fill',
@@ -117,13 +117,13 @@ const allowed = new Set([
 check('theme tokens are all documented aliases', [...tokens].every(token => allowed.has(token)), [...tokens].filter(t => !allowed.has(t)).join(','))
 check('has an error boundary', /componentDidCatch|ErrorBoundary/.test(client))
 check('has search input', client.includes('搜索'))
-check('has per-column search', client.includes('搜索本列'))
+check('per-column search removed (global search only)', !client.includes('搜索本列') && client.includes('搜索'))
 check('daily report time is 24-hour', client.includes('24 小时制') || client.includes('24小时制'))
 // AM/PM is style-dependent; the 24-hour hint check above covers the input format.
 check('supports status filter', client.includes('blocked') && client.includes('paused'))
 check('supports task editing', client.includes('/tasks/update'))
 check('supports pause/resume/interrupt actions', client.includes("'pause'") && client.includes("'resume'") && client.includes("'interrupt'"))
-check('has daily report UI', client.includes('/reports') && client.includes('日报'))
+check('has work journal UI', client.includes('/reports') && client.includes('工作日志'))
 check('has webhook notification UI', /webhook/i.test(client) && client.includes('测试通知'))
 check('uses the webhook test endpoint', client.includes('/webhook/test'))
 check('has the idea status column', client.includes("'idea'") && client.includes('想法'))
@@ -171,15 +171,15 @@ for (const route of ["'/evolution'", "'/evolution/content'", "'/evolution/skills
   "'/evolution/lessons/delete'", "'/evolution/skills/action'"]) {
   check(`api route ${route}`, apiSource.includes(route))
 }
-check('api version is 0.6.0', /VERSION = '0\.6\.0'/.test(apiSource))
+check('api version is 0.7.0', /VERSION = '0\.7\.0'/.test(apiSource))
 check('state carries the evolution meta', apiSource.includes('getEvolutionMeta()'))
 check('state carries the briefs meta', /briefs\s*:\s*[^\n]{0,80}meta\s*\(\s*\)/.test(apiSource))
 const toolSource = read('host/tool.js')
 check('agent tool supports retrospective and evolution', toolSource.includes("'retrospective'") &&
   toolSource.includes("'evolution'"))
 check('webhook has a retrospective template', read('host/webhook.js').includes('retrospectiveMarkdown'))
-check('package version is 0.6.0', pkg.version === '0.6.0', pkg.version)
-check('client has the retrospective entry', client.includes('evolutionButton') && client.includes('/evolution'))
+check('package version is 0.7.0', pkg.version === '0.7.0', pkg.version)
+check('client has the merged review entry', client.includes('回顾') && client.includes('/evolution'))
 check('client has the self-evolution settings section', client.includes('evolutionSection') &&
   client.includes('skillMode'))
 check('client lists the retrospective webhook event', client.includes("'retrospective'") &&
@@ -187,8 +187,9 @@ check('client lists the retrospective webhook event', client.includes("'retrospe
 check('client calls every evolution endpoint',
   ['/evolution/generate', '/evolution/lessons', '/evolution/lessons/update', '/evolution/lessons/delete',
     '/evolution/skills/action', '/evolution/content', '/evolution/skills/content'].every(route => client.includes(route)))
-check('client covers all three drawer tabs', client.includes('tabRetro') && client.includes('tabLessons') &&
-  client.includes('tabSkills'))
+check('client covers the merged four-tab review drawer',
+  client.includes('回顾') && ['日志', '复盘', '经验', '技能'].every(text => client.includes(text)) &&
+  client.includes('tabRetro') && client.includes('tabLessons') && client.includes('tabSkills'))
 
 console.log('7. v0.6 morning brief + today workbench')
 const briefsSource = read('host/briefs.js')
@@ -204,7 +205,7 @@ check('briefs exposes the engine constants', /BRIEF_TICK_MS = 30_000/.test(brief
   /BRIEF_POLL_MS = 1_000/.test(briefsSource) &&
   /BRIEF_MAX_WAIT_MS = 10 \* 60 \* 1000/.test(briefsSource) &&
   /BRIEF_DATE_PATTERN/.test(briefsSource))
-check('briefs uses the fixed four sections', ['昨日回顾', '今日焦点', '等你处理', '风险与提醒']
+check('briefs uses the fixed four sections', ['昨天发生了什么', '今天建议先做', '等你处理', '提醒']
   .every(heading => briefsSource.includes(heading)))
 
 check('store exports pendingInsertIndex', /export function pendingInsertIndex\b/.test(storeSource))
@@ -228,7 +229,7 @@ check('webhook has a morning brief template', read('host/webhook.js').includes('
 
 check('client uses the briefs endpoints', client.includes('/briefs') && client.includes('/briefs/generate') &&
   client.includes('/webhook/log'))
-for (const text of ['今日焦点', '待你处理', '晨间简报', '交代一件事', '通知记录']) {
+for (const text of ['今日简报', '待你处理', '晨间简报', '交代一件事', '通知记录']) {
   check(`client has the v0.6 copy ${text}`, client.includes(text))
 }
 for (const text of ['下一个执行', '停止本轮', '自动执行']) {
@@ -237,7 +238,7 @@ for (const text of ['下一个执行', '停止本轮', '自动执行']) {
 for (const text of ['想法', '队列', '进行中', '已结束']) {
   check(`client has the v0.6 column copy ${text}`, client.includes(text))
 }
-check('client has the today view shell', client.includes("'today'") && client.includes('查看晨报'))
+check('client has the today view shell', client.includes("'today'") && client.includes('查看全文'))
 check('client degrades when the Host has no briefs', client.includes('当前 Host 版本不支持晨间简报'))
 
 // The browser half keeps its zh/en dictionaries inline: every key must exist in
@@ -255,10 +256,49 @@ check('client zh/en dictionaries are key-paired',
   zhKeys.length > 300 && zhKeys.length === enKeys.length && zhKeys.every(key => enKeys.includes(key)),
   `zh=${zhKeys.length} en=${enKeys.length}`)
 check('v0.6 copy is translated to English',
-  ['Morning brief', 'Needs you', 'View brief', 'Generate now', 'No brief yet today',
+  ['Morning brief', 'Needs you', 'Generate now', 'No brief yet today',
     'Delivery log', 'Run next', 'Stop this run', 'Auto-run', 'Add to queue'].every(text => client.includes(text)))
 check('old naming is fully replaced in the client',
-  !['待开始', '发布任务', '置顶', '打断', '自动领取', '已归档'].some(text => client.includes(text)))
+  !['待开始', '发布任务', '置顶', '打断', '自动领取', '已归档', '日报'].some(text => client.includes(text)))
+
+console.log('8. v0.7 work journal + retrospective v2 + structured suggestions')
+const reportsSource = read('host/reports.js')
+check('work journal prompt uses the new four sections',
+  ['工作日志', '今日要点', '逐项记录', '待跟进', '明天建议'].every(text => reportsSource.includes(text)))
+check('work journal reads real session content',
+  /extractSessionDigest/.test(reportsSource) && /collectSessionDigests/.test(reportsSource) &&
+  reportsSource.includes('transcript'))
+check('work journal has a no-activity path',
+  reportsSource.includes('没有记录到工作活动') || /没有工作活动|暂无工作记录/.test(reportsSource))
+check('work journal fallback keeps real results',
+  reportsSource.includes('finalAnswer') && reportsSource.includes('lastMessage'))
+check('brief suggestions marker and parser exist', briefsSource.includes('SUGGESTIONS_JSON') &&
+  /extractBriefSuggestions/.test(briefsSource) && /normalizeBriefSuggestions/.test(briefsSource) &&
+  /buildFallbackSuggestions/.test(briefsSource))
+check('brief suggestions are persisted through the store',
+  storeSource.includes('lastSuggestions') && briefsSource.includes('lastSuggestions') &&
+  /normalizeSuggestions|normalizeSuggestion/.test(storeSource) && /MAX_BRIEF_SUGGESTIONS = 3/.test(storeSource))
+check('brief suggestions have a local fallback',
+  /buildFallbackSuggestions|fallbackSuggestions/i.test(briefsSource))
+check('morning brief prompt uses the new four sections',
+  ['昨天发生了什么', '今天建议先做', '等你处理', '提醒'].every(text => briefsSource.includes(text)))
+check('retrospective prompt uses the new five sections',
+  ['这段时间在做什么', '反复出现的问题', '有效的做法', '下个周期只改 3 件事', '值得固化的规则']
+    .every(text => evolutionSource.includes(text)))
+check('retrospective reads the work journal', evolutionSource.includes('工作日志') &&
+  /collectJournalTexts/.test(evolutionSource))
+check('webhook morning brief carries the suggestions block', read('host/webhook.js').includes('今天建议'))
+
+check('client shows the three today blocks',
+  ['今日简报', '等你处理', '进行中'].every(text => client.includes(text)))
+check('client strips markdown from card summaries', client.includes('stripMarkdown'))
+check('client renders structured suggestions', client.includes('lastSuggestions') && client.includes('加入队列'))
+check('client removed the five KPI cards', !client.includes('dsh-ps-stats') && !/KpiModule/.test(client))
+check('client removed the standalone report/retrospective header buttons',
+  !client.includes('日报') && client.includes('回顾'))
+check('client keeps a global task search', client.includes('搜索') && !client.includes('搜索本列'))
+check('client moves auto-run into the task page status strip',
+  client.includes('自动执行') && !client.includes('执行中 pill'))
 
 console.log()
 if (failures.length) {
