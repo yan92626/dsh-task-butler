@@ -401,6 +401,12 @@ def main():
             check("invalid morningBrief time -> 400", status == 400, payload)
             status, payload = request(base, "POST", "/secretary/api/settings", {"morningBrief": {"dir": 42}})
             check("invalid morningBrief dir -> 400", status == 400, payload)
+            # An invalid date must be rejected before any generation starts.
+            status, payload = request(base, "POST", "/secretary/api/briefs/generate", {"date": "not-a-date"})
+            check("invalid brief generate date -> 400", status == 400, payload)
+            brief_state = (state(base).get("briefs") or {}).get("settings") or {}
+            check("invalid generate did not reserve a generation",
+                  not brief_state.get("generatingDate"), brief_state)
 
         print("9. settings validation (restored afterwards)")
         original_settings = ORIGINAL["settings"]
