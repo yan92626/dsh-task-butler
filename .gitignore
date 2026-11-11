@@ -8,6 +8,9 @@ node_modules/
 .DS_Store
 Thumbs.db
 
+# internal research notes (contain real task data; kept out of the public repo)
+research/
+
 # python
 __pycache__/
 *.py[cod]

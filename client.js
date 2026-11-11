@@ -1,21 +1,25 @@
 /**
- * dsh-personal-secretary — browser half (v9).
+ * dsh-personal-secretary — browser half (v0.6).
  *
- * 任务管家：任务、会话、日报与自我进化，都替你盯着。
- *  - 四列卡片看板：待开始 / 排队中 / 处理中（执行中·已暂停·阻塞）/ 已归档
+ * 任务管家：你交代，我盯着——今日焦点、待你处理、日报与复盘。
+ *  - 两个一级视图：今日（默认）/ 任务。今日工作台回答「今天做什么 / 什么需要我」：
+ *    问候与「我在盯着」、一句话快捷捕获、晨间简报卡、待你处理、今日焦点、进行中、
+ *    今日完成，右栏今日小账 / 快捷入口 / 通知卡
+ *  - 通知中心：头部铃铛 + 未读数字 + popover（待你处理 + 最近动态 + 全部标记已读），
+ *    另有 Webhook「通知记录」弹窗（`GET /webhook/log`）
+ *  - 任务视图：想法 / 队列 / 进行中 / 已结束 四列卡片看板
  *  - 每列独立的搜索框 + 漏斗筛选弹层（状态/优先级/来源），列间互不影响；
  *    筛选生效时列头数量显示 `x/y`，空结果显示「没有匹配的任务」+ 清除操作
  *  - 统一的四段式卡片：身份行（优先级旗 + 标题 + 始终可见状态徽章 + DSH 图标）/
  *    固定两行上下文 / 元信息行 1（目录·DSH 标签）/ 元信息行 2（时间·耗时·模型·tokens·轮次）
- *  - 跨列拖拽：待开始 ⇄ 排队中（promote / demote），排队中内部拖拽排序 + Alt+↑↓
+ *  - 跨列拖拽：想法 ⇄ 队列（promote / demote），队列内部拖拽排序 + Alt+↑↓
  *  - 按状态/优先级着色的卡片（淡色底、左侧色条、徽章）与克制的 hover 动效
- *  - 按状态提供操作：移入排队中 / 移回待开始 / 执行 / 编辑 / 置顶 / 暂停 / 继续 / 打断 / 重试 / 删除 / 打开会话
- *  - 独立「设置」模态弹窗（执行 / 通知 / 任务 / 日报，变更即保存）；日报执行时间使用
- *    24 小时制 HH:mm 文本输入（自动补冒号，提交前校验，非法不提交）
- *  - 日报抽屉（日期列表 + Markdown 原文 + 立即生成 / 重新生成 / 刷新）
- *  - v9 自我进化：页头「复盘」入口（技能候选徽标）+ 三 tab 抽屉（复盘 / 经验 / 技能），
- *    手动立即复盘（3s 轮询直到结束）、经验规则增删启停、技能候选采用/启停/删除/查看原文，
- *    设置弹窗新增「自我进化」分区（开关、每天/每周 + HH:mm + 星期、注入经验、技能模式、目录、状态）
+ *  - 按状态提供操作：加入队列 / 退回想法 / 执行 / 编辑 / 下一个执行 / 暂停 / 继续 / 停止本轮 / 重试 / 删除 / 打开会话
+ *  - 独立「设置」模态弹窗（执行 / 桌面提醒 / 消息推送 / 日报 / 晨间简报 / 复盘与沉淀，变更即保存）；
+ *    日报与晨报执行时间使用 24 小时制 HH:mm 文本输入（自动补冒号，提交前校验，非法不提交）
+ *  - 日报抽屉、晨间简报抽屉（日期列表 + Markdown 原文 + 立即生成 / 刷新）
+ *  - 复盘与沉淀：页头「复盘」入口（技能候选徽标）+ 三 tab 抽屉（复盘 / 经验 / 技能），
+ *    手动立即复盘（3s 轮询直到结束）、经验规则增删启停、技能候选采用/启停/删除/查看原文
  *  - 轮询（refcount、隐藏页暂停）、错误横幅、toast、系统通知、导出、拖拽 + 键盘排序
  *
  * Single-file plain-JS client plugin for the DSH Web GUI:
@@ -55,10 +59,18 @@ window.__ModuleLoader__.load({
     const DEFAULT_PRIORITY = 'normal'
     const COLUMN_KEYS = ['idea', 'pending', 'claimed', 'ended']
     const WEBHOOK_FORMATS = ['generic', 'feishu', 'wecom', 'dingtalk', 'slack']
-    const WEBHOOK_EVENT_KEYS = ['claimed', 'succeeded', 'blocked', 'failed', 'dailyReport', 'retrospective']
+    const WEBHOOK_EVENT_KEYS = ['claimed', 'succeeded', 'blocked', 'failed', 'dailyReport', 'morningBrief', 'retrospective']
     const COLUMN_STATUS_FILTERS = { claimed: CLAIMED_STATUSES.slice(), ended: ENDED_STATUSES.slice() }
 
     /* v9: self-evolution / retrospectives */
+    const BRIEF_POLL_MS = 2500
+    const LAST_SEEN_KEY = 'dsh-ps-last-seen'
+    const FOCUS_SIZE = 3
+    const FOCUS_ROTATE = 3
+    const TODAY_DONE_MAX = 5
+    const NOTIF_WAITING_MAX = 4
+    const NOTIF_RECENT_MAX = 6
+    const NOTIF_RECENT_WINDOW_MS = 24 * 60 * 60 * 1000
     const EVOLUTION_POLL_MS = 3000
     const EVOLUTION_INTERVALS = ['daily', 'weekly']
     const EVOLUTION_SKILL_MODES = ['off', 'ask', 'auto']
@@ -74,15 +86,128 @@ window.__ModuleLoader__.load({
 
     const zh = {
       panelTitle: '任务管家',
-      subtitle: '任务、会话与日报，都替你盯着',
+      subtitle: '你交代，我盯着：今日焦点、待你处理、日报与复盘',
+// ---- v0.6: today view / briefs / notifications
+      viewToday: '今日',
+      viewTasks: '任务',
+      viewSwitchAria: '一级视图',
+      greetingMorning: '早安，今天也交给我。你只需要决定，先做哪一件。',
+      onWatch: '我在盯着',
+      todayProcessed: '今日已处理 {count} 件',
+      todayNeedYouCount: '待你处理 {count} 件',
+      capturePlaceholder: '交代一件事…回车记下，稍后安排',
+      captureSubmit: '记下',
+      captureSaving: '记录中…',
+      captureSaved: '已记下，稍后在「想法」里安排',
+      captureNoCwd: '还没有可用的工作目录，请先在任务看板里选择一个目录。',
+      briefCardTitle: '晨间简报',
+      briefView: '查看晨报',
+      briefGenerate: '立即生成',
+      briefGenerating: '正在生成晨报…',
+      briefNoToday: '今天还没有晨报',
+      briefOff: '晨间简报已关闭',
+      briefGoSettings: '去设置',
+      briefNextAt: '下次自动生成 {time}',
+      briefReady: '晨报已生成',
+      briefUnsupported: '当前 Host 版本不支持晨间简报',
+      needsYou: '待你处理',
+      needsYouEmpty: '今天没有需要你拍板的事，剩下的我盯着。',
+      waitBlocked: '等你回复',
+      waitBlockedHint: '等待你的回答或审批 · 已等 {duration}',
+      waitPaused: '已暂停',
+      waitPausedHint: '暂停中 · 点「继续」接着跑',
+      waitFailed: '失败待重试',
+      waitFailedHint: '上一次执行失败 · {time}',
+      waitSkillCandidates: '{count} 个技能候选待采纳',
+      waitSkillHint: '复盘沉淀的技能，采纳后所有会话可用',
+      waitViewCandidates: '查看候选',
+      todayFocus: '今日焦点',
+      focusShuffle: '换一批',
+      focusEmpty: '还没有可排的事。用上面输入框记一件，或去任务看板新建。',
+      focusReasonChain: '承接「{title}」',
+      focusReasonPriority: '优先级高',
+      focusReasonPending: '已在队列排队',
+      focusReasonIdea: '想法待排期',
+      focusRunNow: '立即执行',
+      todayRunning: '进行中',
+      runningEmpty: '目前没有正在跑的任务。队列会按顺序自动执行。',
+      todayDone: '今日完成',
+      doneEmpty: '今天还没有完成的任务。',
+      doneTotal: '今天共完成 {count} 件 · 查看全部',
+      doneNoResult: '无结果摘要',
+      todayLedger: '今日小账',
+      ledgerDone: '完成',
+      ledgerRunning: '进行中',
+      ledgerWaiting: '待你处理',
+      ledgerTokens: '今日 tokens',
+      ledgerWeek: '本周完成 {count} 件',
+      shortcuts: '快捷入口',
+      shortcutBoard: '任务看板',
+      shortcutReports: '日报',
+      shortcutEvolution: '复盘',
+      shortcutLessons: '经验',
+      webhookCardTitle: '消息推送',
+      webhookEnabled: '已开启',
+      webhookDisabled: '已关闭',
+      webhookLog: '查看通知记录',
+      notifications: '通知',
+      notificationsAria: '通知中心',
+      recentActivity: '最近动态',
+      markAllRead: '全部标记已读',
+      noActivity: '暂时没有新动态',
+      notificationLogTitle: '通知记录',
+      notificationLogSub: '最近 20 次 Webhook 投递结果',
+      notificationLogEmpty: '还没有投递记录',
+      notificationLogFailed: '通知记录加载失败',
+      notificationLogRefresh: '刷新',
+      notificationUnread: '{count} 条未读',
+      notificationRead: '已全部读完',
+      briefsTitle: '晨间简报',
+      briefsSub: '每天由 AI 汇总昨日进展与今日焦点',
+      briefsLoading: '正在加载晨报…',
+      briefsEmpty: '还没有晨报',
+      briefsEmptyHint: '生成今天的晨间简报，之后会显示在这里。',
+      briefsSelect: '选择左侧的晨报查看内容',
+      briefsContentLoading: '正在加载晨报内容…',
+      briefsLoadFailed: '晨报列表加载失败',
+      briefsContentFailed: '晨报内容加载失败',
+      briefsGenerate: '立即生成今天',
+      briefsRegenerate: '重新生成',
+      briefsGenerated: '晨报已生成',
+      briefsGenerateFailed: '晨报生成失败',
+      briefsRefresh: '刷新',
+      briefsToday: '今天',
+      briefsNoSelection: '请选择一份晨报',
+      briefsEmptyContent: '晨报为空',
+      briefLast: '最近状态',
+      briefLastDate: '最近日期',
+      briefErrorLabel: '最近错误',
+      briefGenerateNow: '立即生成',
+      briefGenerateDone: '晨报已生成',
+      briefGenerateFail: '晨报生成失败',
+      briefSettingsTitle: '晨间简报设置',
+      briefSettingsSub: '定时生成与输出目录',
+      briefEnable: '启用晨间简报',
+      briefEnableHint: '按设定的时间自动生成晨报',
+      briefTime: '生成时间',
+      briefTimeHint: '24 小时制 HH:mm（00:00–23:59）',
+      briefTimeInvalid: '晨报时间必须是 24 小时制 HH:mm',
+      briefDir: '输出目录',
+      briefDirHint: '晨报 Markdown 会写入这个目录，生成时自动创建。',
+      briefDirInvalid: '晨报目录不合法',
+      briefStatusIdle: '尚未生成',
+      briefStatusRunning: '生成中',
+      briefStatusOk: '生成成功',
+      briefStatusFailed: '生成失败',
+      webhookEventMorningBrief: '晨报生成',
       running: '执行中',
       runningPill: '执行中 {running} / {limit}',
-      autoStart: '自动领取',
-      autoStartHint: '自动领取排队中的任务',
+      autoStart: '自动执行',
+      autoStartHint: '队列中的任务按顺序自动执行',
       settings: '设置',
       settingsTitle: '设置',
-      settingsSub: '执行、通知与日报设置',
-      publish: '发布任务',
+      settingsSub: '执行、提醒、推送、日报与复盘设置',
+      publish: '新建任务',
       dailyReport: '日报',
       reportsTitle: '工作日报',
       reportsSub: '每日自动汇总执行中的任务与 DSH 会话',
@@ -121,32 +246,32 @@ window.__ModuleLoader__.load({
       reportBytes: '{size}',
       reportDate: '日期',
       reportSaved: '日报设置已保存',
-      kpiPending: '排队中',
+      kpiPending: '队列',
       kpiRunning: '执行中',
       kpiDone: '已完成',
       kpiFailed: '失败',
-      kpiIdea: '待开始',
-      kpiProcessing: '处理中',
+      kpiIdea: '想法',
+      kpiProcessing: '进行中',
       kpiIdeaSub: '想法与暂不开展',
-      kpiAutoStartOn: '自动领取 开',
-      kpiAutoStartOff: '自动领取 关',
+      kpiAutoStartOn: '自动执行 开',
+      kpiAutoStartOff: '自动执行 关',
       kpiConcurrency: '并发 {running} / {limit}',
       kpiTodayPlus: '今日 +{count}',
       kpiTodayNone: '无',
       kpiGroupLabel: '统计',
       kpiModuleAria: '{label}：{value}',
-      columnPending: '排队中',
-      columnClaimed: '处理中',
-      columnEnded: '已归档',
-      columnPendingHint: '等待秘书领取（自动或手动）',
+      columnPending: '队列',
+      columnClaimed: '进行中',
+      columnEnded: '已结束',
+      columnPendingHint: '队列按顺序自动执行，也可以手动立即执行',
       columnPendingDragHint: '拖动排序 · Alt+↑↓',
-      columnClaimedHint: '执行中 / 已暂停 / 阻塞',
+      columnClaimedHint: '执行中 / 已暂停 / 等你回复',
       columnEndedHint: '完成、失败与取消的记录',
-      emptyPendingColumn: '暂无排队中的任务',
-      emptyPendingColumnHint: '发布任务后会出现在这里',
-      emptyClaimedColumn: '没有处理中的任务',
+      emptyPendingColumn: '暂无队列中的任务',
+      emptyPendingColumnHint: '新建任务后会出现在这里',
+      emptyClaimedColumn: '没有进行中的任务',
       emptyClaimedColumnHint: '自动或手动执行后会出现在这里',
-      emptyEndedColumn: '还没有已归档的任务',
+      emptyEndedColumn: '还没有已结束的任务',
       emptyEndedColumnHint: '完成、失败或取消的任务会留在这里',
       filterEmptyTitle: '没有匹配的任务',
       filterEmptyHint: '换一个关键词或筛选条件试试。',
@@ -159,25 +284,25 @@ window.__ModuleLoader__.load({
       openTask: '查看任务详情',
       openSession: '打开会话',
       run: '执行',
-      runNext: '置顶',
+      runNext: '下一个执行',
       moveUp: '上移',
       moveDown: '下移',
       retry: '重试',
       pause: '暂停',
       resume: '继续',
-      interrupt: '打断',
+      interrupt: '停止本轮',
       delete: '删除',
       deleteTask: '删除任务',
       edit: '编辑',
       view: '查看',
-      statusPending: '排队中',
+      statusPending: '队列中',
       statusRunning: '执行中',
       statusPaused: '已暂停',
-      statusBlocked: '阻塞',
+      statusBlocked: '等你回复',
       statusDone: '已完成',
       statusFailed: '失败',
       statusCancelled: '已取消',
-      badgeBlocked: '阻塞',
+      badgeBlocked: '等你回复',
       blockedNote: '等待你的回答或审批',
       badgeSession: 'DSH 会话',
       runningFor: '已运行 {duration}',
@@ -224,10 +349,10 @@ window.__ModuleLoader__.load({
       transcriptEmptyTask: '任务开始后，这里会显示执行过程。',
       transcriptFailed: '对话加载失败',
       chatFailed: '发送失败',
-      chatReviveHint: '发送消息会重新启动该任务，卡片将移回「处理中」；会话不可用时将重新排队',
+      chatReviveHint: '发送消息会重新启动该任务，卡片将移回「进行中」；会话不可用时将重新排队',
       chatContinueHint: '发送消息将继续该任务',
-      chatRevivedRunning: '任务已重新开始，已移回「处理中」',
-      chatRevivedPending: '任务已重新排队，稍后会自动领取',
+      chatRevivedRunning: '任务已重新开始，已移回「进行中」',
+      chatRevivedPending: '任务已重新排队，稍后会自动执行',
       roleUser: '用户',
       roleAssistant: '助手',
       confirming: '确认删除',
@@ -235,8 +360,8 @@ window.__ModuleLoader__.load({
       close: '关闭',
       dismiss: '知道了',
       saving: '保存中…',
-      publishTitle: '发布任务',
-      publishSubtitle: '新任务默认放进待开始，确认后再移入排队中执行。',
+      publishTitle: '新建任务',
+      publishSubtitle: '新任务默认放进想法，确认后再加入队列执行。',
       modeSingle: '单个',
       modeBatch: '批量',
       fieldTitle: '标题',
@@ -251,7 +376,7 @@ window.__ModuleLoader__.load({
       batchPlaceholder: '每行一个任务，格式：标题 | 描述\n例如：\n修复登录页样式 | 修复移动端错位问题\n补写单元测试',
       batchHint: '每行一个任务；用「|」分隔标题与描述，未分隔时整行作为标题',
       batchCount: '共 {count} 个任务',
-      batchOverflow: '一次最多发布 {max} 个任务',
+      batchOverflow: '一次最多创建 {max} 个任务',
       chainSwitch: '承接上一任务的结果',
       chainHint: '将「{title}」的执行结果拼接到本任务开头',
       chainHintBatch: '整批任务按顺序串联，后一个承接前一个的结果',
@@ -260,11 +385,11 @@ window.__ModuleLoader__.load({
       batchRequired: '请至少填写一个任务',
       titleTooLong: '标题不能超过 {max} 个字符',
       cwdInvalid: '工作目录必须是绝对路径',
-      submit: '发布',
-      submitting: '发布中…',
+      submit: '创建',
+      submitting: '创建中…',
       cancel: '取消',
-      publishSuccess: '已发布 {count} 个任务',
-      publishSuccessOne: '已发布 1 个任务',
+      publishSuccess: '已创建 {count} 个任务',
+      publishSuccessOne: '已创建 1 个任务',
       editTitle: '编辑任务',
       editSubtitle: '修改标题、描述、目录或承接关系。',
       editSubmit: '保存修改',
@@ -290,7 +415,7 @@ window.__ModuleLoader__.load({
       loadFailed: '加载失败',
       loadingState: '正在加载任务…',
       stateLoadFailed: '状态刷新失败',
-      publishFailed: '发布失败',
+      publishFailed: '新建失败',
       settingsFailed: '设置保存失败',
       actionFailed: '操作失败',
       reorderFailed: '排序保存失败',
@@ -305,16 +430,16 @@ window.__ModuleLoader__.load({
       runStarted: '已开始执行「{title}」',
       pausedToast: '已暂停「{title}」',
       resumedToast: '已继续「{title}」',
-      interruptedToast: '已打断「{title}」',
+      interruptedToast: '已停止本轮「{title}」',
       retriedToast: '已重新排队「{title}」',
-      blockedHint: '阻塞：等待你回答问题或审批；也可以打开会话处理。',
+      blockedHint: '等你回复：在会话里回答问题或审批后，任务会继续；也可以打开会话处理。',
       pausedHint: '已暂停：继续会向会话投递「继续完成该任务」。',
       noTasksYet: '暂无任务',
-      queued: '排队中',
+      queued: '队列中',
       emptyTitle: '还没有任务',
-      emptyHint: '发布第一个任务，任务管家会按并发自动领取执行；也可以批量粘贴一组任务。',
-      emptyCta: '发布任务',
-      emptyCtaBatch: '批量发布',
+      emptyHint: '把要做的事写下来，我会按顺序安排执行；也可以批量粘贴一组任务。',
+      emptyCta: '新建任务',
+      emptyCtaBatch: '批量创建',
       crashTitle: '任务管家面板出错了',
       crashHint: '切换页面或刷新后重试；如果问题持续出现，请把控制台里的错误信息反馈给插件作者。',
       searchPlaceholder: '搜索任务…',
@@ -322,15 +447,15 @@ window.__ModuleLoader__.load({
       showSessions: 'DSH 会话',
       unknownError: '未知错误',
 
-      /* v4: 待开始 + 优先级 + 设置弹窗 + 跨列拖拽 */
-      statusIdea: '待开始',
-      columnIdeas: '待开始',
-      columnIdeasHint: '想法与暂不开展的任务 · 想好了拖到排队中',
-      emptyIdeasColumn: '还没有待开始的任务',
+      /* v4: 想法 + 优先级 + 设置弹窗 + 跨列拖拽 */
+      statusIdea: '想法',
+      columnIdeas: '想法',
+      columnIdeasHint: '想法与暂不开展的任务 · 想好了拖到队列',
+      emptyIdeasColumn: '还没有想法任务',
       emptyIdeasColumnHint: '想法、暂不开展的任务都可以先放在这里',
       emptyIdeasColumnAction: '记一个',
-      ideaHint: '待开始的任务不会被自动领取；拖到「排队中」或点「移入排队中」后才开始执行。',
-      badgeIdea: '待开始',
+      ideaHint: '想法任务不会自动执行；拖到「队列」或点「加入队列」后才开始执行。',
+      badgeIdea: '想法',
       priorityLabel: '优先级',
       priorityUrgent: '紧急',
       priorityHigh: '高',
@@ -339,31 +464,31 @@ window.__ModuleLoader__.load({
       priorityAll: '全部优先级',
       filterPriorityLabel: '按优先级筛选',
       fieldStatus: '放入',
-      fieldStatusHint: '待开始的任务不会自动执行，确认后再移入排队中',
-      statusOptionIdea: '待开始',
-      statusOptionPending: '排队中',
-      promote: '移入排队中',
-      demote: '移回待开始',
-      promotedToast: '已将「{title}」移入排队中',
-      demotedToast: '已将「{title}」移回待开始',
-      dragToPending: '放到排队中',
-      dragToIdeas: '放到待开始',
+      fieldStatusHint: '想法任务不会自动执行，确认后再加入队列',
+      statusOptionIdea: '想法',
+      statusOptionPending: '队列',
+      promote: '加入队列',
+      demote: '退回想法',
+      promotedToast: '已将「{title}」加入队列',
+      demotedToast: '已将「{title}」退回想法',
+      dragToPending: '放到队列',
+      dragToIdeas: '放到想法',
       dragNotAllowed: '这一列不接受该任务',
       createdChip: '创建 {time}',
       updatedChip: '更新 {time}',
       updatedAt: '更新时间',
       settingsSectionExecution: '执行',
-      settingsExecutionSub: '并发、默认模型与自动领取',
-      settingsSectionNotify: '通知',
+      settingsExecutionSub: '并发、默认模型与自动执行',
+      settingsSectionNotify: '桌面提醒',
       settingsNotifySub: '任务跑完时的提醒方式',
       settingsSectionReport: '日报',
       settingsReportSub: '定时生成与输出目录',
       settingsDone: '完成',
       settingsAutoSave: '修改会立即保存',
       settingsSectionBackup: '数据备份',
-      settingsSectionWebhook: '消息通知',
-      webhookSub: '任务与日报的关键进展推送到 Webhook（Markdown）',
-      webhookEnableLabel: '启用消息通知',
+      settingsSectionWebhook: '消息推送',
+      webhookSub: '任务、日报与晨报的关键进展推送到 Webhook（Markdown）',
+      webhookEnableLabel: '启用消息推送',
       webhookEnableHint: '开启后按选择的事件推送；关闭时可先填写配置并发送测试',
       webhookUrl: 'Webhook 地址',
       webhookUrlPlaceholder: 'https://example.com/webhook',
@@ -377,9 +502,9 @@ window.__ModuleLoader__.load({
       webhookFormatDingtalk: '钉钉',
       webhookFormatSlack: 'Slack',
       webhookEvents: '推送事件',
-      webhookEventClaimed: '任务被领取',
+      webhookEventClaimed: '任务开始执行',
       webhookEventSucceeded: '执行成功',
-      webhookEventBlocked: '任务阻塞',
+      webhookEventBlocked: '任务等你回复',
       webhookEventFailed: '任务失败',
       webhookEventDailyReport: '日报生成',
       webhookEventRetrospective: '复盘生成',
@@ -393,7 +518,7 @@ window.__ModuleLoader__.load({
       webhookLastLineIdle: '最近：暂无记录',
       webhookStatusOk: '成功',
       webhookStatusFailed: '失败',
-      webhookSectionAria: '消息通知设置',
+      webhookSectionAria: '消息推送设置',
       backupSub: '自动保存的恢复点，可随时恢复',
       backupLoading: '正在加载备份…',
       backupEmpty: '暂无备份',
@@ -412,8 +537,8 @@ window.__ModuleLoader__.load({
       backupTaskCount: '{count} 个任务',
       backupRefreshAria: '刷新备份列表',
       backupRestoreAria: '恢复 {time} 的备份',
-      publishIdeaSuccess: '已放入待开始 {count} 个任务',
-      publishIdeaSuccessOne: '已放入待开始 1 个任务',
+      publishIdeaSuccess: '已放入想法 {count} 个任务',
+      publishIdeaSuccessOne: '已放入想法 1 个任务',
 
       /* v6: per-column search/filter + 24h time + uniform card zones */
       columnSearchPlaceholder: '搜索本列…',
@@ -432,8 +557,8 @@ window.__ModuleLoader__.load({
       contextEmpty: '—',
 
       /* v9: self-evolution / retrospectives / lessons / skills */
-      evolution: '自我进化',
-      evolutionTitle: '复盘 · 自我进化',
+      evolution: '复盘与沉淀',
+      evolutionTitle: '复盘与沉淀',
       evolutionSub: '复盘任务进展，沉淀经验规则与可复用技能',
       evolutionButton: '复盘',
       retrospective: '复盘',
@@ -457,8 +582,8 @@ window.__ModuleLoader__.load({
       retrospectiveLastDate: '最近复盘',
       retrospectiveError: '最近错误',
       retrospectiveTabAria: '复盘列表，共 {count} 份',
-      evolutionLoading: '正在加载自我进化数据…',
-      evolutionLoadFailed: '自我进化数据加载失败',
+      evolutionLoading: '正在加载复盘与沉淀数据…',
+      evolutionLoadFailed: '复盘与沉淀数据加载失败',
       evolutionStatusIdle: '尚未复盘',
       evolutionStatusRunning: '复盘中',
       evolutionStatusOk: '复盘成功',
@@ -493,7 +618,7 @@ window.__ModuleLoader__.load({
       lessonAddFailed: '添加经验失败',
       lessonUpdateFailed: '更新经验失败',
       lessonDeleteFailed: '删除经验失败',
-      lessonFormHint: '规则会注入到之后领取的任务提示词里（可在设置中关闭）。',
+      lessonFormHint: '规则只作存档查阅，不会注入任务提示词；新建任务时可手动引用。',
       categoryCorrection: '用户纠正',
       categoryError: '错误',
       categoryPreference: '偏好',
@@ -570,7 +695,7 @@ window.__ModuleLoader__.load({
       evolutionSkillModeHint: '候选需要手动采用；自动启用会直接进入技能目录。',
       evolutionDir: '复盘目录',
       evolutionDirHint: '复盘 Markdown 会写入这个目录，生成时自动创建。',
-      evolutionSection: '自我进化',
+      evolutionSection: '复盘与沉淀',
       evolutionSectionSub: '复盘任务、沉淀经验与技能',
       evolutionLast: '最近复盘',
       evolutionLastPending: '尚未复盘',
@@ -582,18 +707,131 @@ window.__ModuleLoader__.load({
 
     const en = {
       panelTitle: 'Task Butler',
-      subtitle: 'Tasks, sessions and daily reports — all watched for you',
+      subtitle: 'You delegate; I keep watch — focus, needs-you, reports and retrospectives',
+// ---- v0.6: today view / briefs / notifications
+      viewToday: 'Today',
+      viewTasks: 'Tasks',
+      viewSwitchAria: 'Primary views',
+      greetingMorning: 'Good morning — leave it to me. You only decide what comes first.',
+      onWatch: 'On watch',
+      todayProcessed: '{count} handled today',
+      todayNeedYouCount: '{count} need you',
+      capturePlaceholder: 'Delegate something… press Enter to save',
+      captureSubmit: 'Save',
+      captureSaving: 'Saving…',
+      captureSaved: 'Saved to Ideas',
+      captureNoCwd: 'No workspace folder yet — pick one on the task board first.',
+      briefCardTitle: 'Morning brief',
+      briefView: 'View brief',
+      briefGenerate: 'Generate now',
+      briefGenerating: 'Generating brief…',
+      briefNoToday: 'No brief yet today',
+      briefOff: 'Morning brief is off',
+      briefGoSettings: 'Open settings',
+      briefNextAt: 'Next automatic run {time}',
+      briefReady: 'Brief ready',
+      briefUnsupported: 'This Host version does not support morning briefs',
+      needsYou: 'Needs you',
+      needsYouEmpty: 'Nothing needs you today — I keep watching.',
+      waitBlocked: 'Waiting for you',
+      waitBlockedHint: 'Waiting for your reply or approval · {duration}',
+      waitPaused: 'Paused',
+      waitPausedHint: 'Paused — choose Continue to resume',
+      waitFailed: 'Failed, retry',
+      waitFailedHint: 'Last run failed · {time}',
+      waitSkillCandidates: '{count} skill candidates to adopt',
+      waitSkillHint: 'Distilled from retrospectives; available to every session once adopted',
+      waitViewCandidates: 'View candidates',
+      todayFocus: 'Today’s focus',
+      focusShuffle: 'Shuffle',
+      focusEmpty: 'Nothing lined up. Save something above or open the task board.',
+      focusReasonChain: 'Continues “{title}”',
+      focusReasonPriority: 'High priority',
+      focusReasonPending: 'Already queued',
+      focusReasonIdea: 'Idea awaiting scheduling',
+      focusRunNow: 'Run now',
+      todayRunning: 'In progress',
+      runningEmpty: 'Nothing running. The queue runs automatically in order.',
+      todayDone: 'Done today',
+      doneEmpty: 'Nothing finished today yet.',
+      doneTotal: '{count} done today · View all',
+      doneNoResult: 'No result summary',
+      todayLedger: 'Today’s ledger',
+      ledgerDone: 'Done',
+      ledgerRunning: 'Running',
+      ledgerWaiting: 'Needs you',
+      ledgerTokens: 'Tokens today',
+      ledgerWeek: '{count} done this week',
+      shortcuts: 'Shortcuts',
+      shortcutBoard: 'Task board',
+      shortcutReports: 'Daily report',
+      shortcutEvolution: 'Retrospectives',
+      shortcutLessons: 'Lessons',
+      webhookCardTitle: 'Push notifications',
+      webhookEnabled: 'On',
+      webhookDisabled: 'Off',
+      webhookLog: 'View delivery log',
+      notifications: 'Notifications',
+      notificationsAria: 'Notifications',
+      recentActivity: 'Recent activity',
+      markAllRead: 'Mark all read',
+      noActivity: 'Nothing new yet',
+      notificationLogTitle: 'Delivery log',
+      notificationLogSub: 'Last 20 webhook deliveries',
+      notificationLogEmpty: 'No deliveries yet',
+      notificationLogFailed: 'Could not load the delivery log',
+      notificationLogRefresh: 'Refresh',
+      notificationUnread: '{count} unread',
+      notificationRead: 'All read',
+      briefsTitle: 'Morning briefs',
+      briefsSub: 'A daily AI digest of yesterday and today',
+      briefsLoading: 'Loading briefs…',
+      briefsEmpty: 'No briefs yet',
+      briefsEmptyHint: 'Generate today’s brief; it will show up here.',
+      briefsSelect: 'Select a brief on the left',
+      briefsContentLoading: 'Loading brief…',
+      briefsLoadFailed: 'Could not load briefs',
+      briefsContentFailed: 'Could not load the brief',
+      briefsGenerate: 'Generate today',
+      briefsRegenerate: 'Regenerate',
+      briefsGenerated: 'Brief generated',
+      briefsGenerateFailed: 'Brief generation failed',
+      briefsRefresh: 'Refresh',
+      briefsToday: 'Today',
+      briefsNoSelection: 'Select a brief',
+      briefsEmptyContent: 'The brief is empty',
+      briefLast: 'Latest status',
+      briefLastDate: 'Latest date',
+      briefErrorLabel: 'Latest error',
+      briefGenerateNow: 'Generate now',
+      briefGenerateDone: 'Brief generated',
+      briefGenerateFail: 'Brief generation failed',
+      briefSettingsTitle: 'Morning brief settings',
+      briefSettingsSub: 'Scheduled generation and output folder',
+      briefEnable: 'Enable morning brief',
+      briefEnableHint: 'Generate a brief automatically at the configured time',
+      briefTime: 'Run at',
+      briefTimeHint: '24-hour clock, HH:mm (00:00–23:59)',
+      briefTimeInvalid: 'The brief time must use 24-hour HH:mm',
+      briefDir: 'Output folder',
+      briefDirHint: 'Brief Markdown is written here; created on demand.',
+      briefDirInvalid: 'Invalid brief folder',
+      briefStatusIdle: 'Not generated yet',
+      briefStatusRunning: 'Generating',
+      briefStatusOk: 'Generated',
+      briefStatusFailed: 'Generation failed',
+      webhookEventMorningBrief: 'Morning brief',
       running: 'Running',
       runningPill: 'Running {running} / {limit}',
-      autoStart: 'Auto-start',
-      autoStartHint: 'Claim queued tasks automatically',
+      autoStart: 'Auto-run',
+      autoStartHint: 'Queued tasks start automatically in order',
       settings: 'Settings',
       settingsTitle: 'Settings',
-      settingsSub: 'Execution, notifications and daily reports',
+      settingsSub: 'Execution, alerts, push, reports and retrospectives',
       publish: 'New task',
       dailyReport: 'Daily report',
       reportsTitle: 'Work report',
-      reportsSub: 'Daily summary of tasks and DSH sessions',
+      reportsSub: 'Daily AI digest of tasks and DSH sessions',
       reportsLoading: 'Loading reports…',
       reportsEmpty: 'No reports yet',
       reportsEmptyHint: 'Generate today’s report and it will appear here.',
@@ -629,33 +867,33 @@ window.__ModuleLoader__.load({
       reportBytes: '{size}',
       reportDate: 'Date',
       reportSaved: 'Report settings saved',
-      kpiPending: 'Queued',
+      kpiPending: 'Queue',
       kpiRunning: 'Running',
       kpiDone: 'Done',
       kpiFailed: 'Failed',
-      kpiIdea: 'Awaiting start',
+      kpiIdea: 'Ideas',
       kpiProcessing: 'In progress',
-      kpiIdeaSub: 'Ideas & paused',
-      kpiAutoStartOn: 'Auto-claim on',
-      kpiAutoStartOff: 'Auto-claim off',
+      kpiIdeaSub: 'Ideas and not yet scheduled',
+      kpiAutoStartOn: 'Auto-run on',
+      kpiAutoStartOff: 'Auto-run off',
       kpiConcurrency: 'Concurrency {running} / {limit}',
       kpiTodayPlus: 'Today +{count}',
       kpiTodayNone: 'None',
       kpiGroupLabel: 'Statistics',
       kpiModuleAria: '{label}: {value}',
-      columnPending: 'Queued',
+      columnPending: 'Queue',
       columnClaimed: 'In progress',
-      columnEnded: 'Archived',
-      columnPendingHint: 'Waiting for the secretary to pick up (auto or manual)',
+      columnEnded: 'Finished',
+      columnPendingHint: 'The queue runs automatically in order — or run one now',
       columnPendingDragHint: 'Drag to reorder · Alt+↑↓',
-      columnClaimedHint: 'Running / paused / blocked',
-      columnEndedHint: 'Records of done, failed and cancelled',
-      emptyPendingColumn: 'Nothing queued',
+      columnClaimedHint: 'Running / paused / waiting for you',
+      columnEndedHint: 'Finished, failed and cancelled records',
+      emptyPendingColumn: 'No queued tasks',
       emptyPendingColumnHint: 'New tasks show up here',
       emptyClaimedColumn: 'Nothing in progress',
       emptyClaimedColumnHint: 'Tasks appear here once they start running',
-      emptyEndedColumn: 'Nothing archived yet',
-      emptyEndedColumnHint: 'Done, failed and cancelled tasks are archived here',
+      emptyEndedColumn: 'Nothing finished yet',
+      emptyEndedColumnHint: 'Finished, failed or cancelled tasks stay here',
       filterEmptyTitle: 'No matching tasks',
       filterEmptyHint: 'Try another keyword or filter.',
       filterReset: 'Clear filters',
@@ -667,13 +905,13 @@ window.__ModuleLoader__.load({
       openTask: 'Open task details',
       openSession: 'Open session',
       run: 'Run',
-      runNext: 'Pin to top',
+      runNext: 'Run next',
       moveUp: 'Move up',
       moveDown: 'Move down',
       retry: 'Retry',
       pause: 'Pause',
       resume: 'Resume',
-      interrupt: 'Interrupt',
+      interrupt: 'Stop this run',
       delete: 'Delete',
       deleteTask: 'Delete task',
       edit: 'Edit',
@@ -681,12 +919,12 @@ window.__ModuleLoader__.load({
       statusPending: 'Queued',
       statusRunning: 'Running',
       statusPaused: 'Paused',
-      statusBlocked: 'Blocked',
+      statusBlocked: 'Waiting for you',
       statusDone: 'Done',
       statusFailed: 'Failed',
       statusCancelled: 'Cancelled',
-      badgeBlocked: 'Blocked',
-      blockedNote: 'Waiting for your answer or approval',
+      badgeBlocked: 'Waiting for you',
+      blockedNote: 'Waiting for your reply or approval',
       badgeSession: 'DSH session',
       runningFor: 'Running {duration}',
       durationChip: 'Duration {duration}',
@@ -732,10 +970,10 @@ window.__ModuleLoader__.load({
       transcriptEmptyTask: 'The execution log appears here once the task starts.',
       transcriptFailed: 'Loading the conversation failed',
       chatFailed: 'Sending failed',
-      chatReviveHint: 'Sending a message restarts this task and moves the card back to “In progress”; if the session is unavailable it will be queued again',
+      chatReviveHint: 'Sending a message restarts the task and moves it back to In progress; if the session is gone it is re-queued',
       chatContinueHint: 'Sending a message continues the task',
       chatRevivedRunning: 'Task restarted and moved back to “In progress”',
-      chatRevivedPending: 'Task queued again; it will be claimed automatically',
+      chatRevivedPending: 'Task queued again; it will run automatically',
       roleUser: 'User',
       roleAssistant: 'Assistant',
       confirming: 'Confirm delete',
@@ -744,7 +982,7 @@ window.__ModuleLoader__.load({
       dismiss: 'Dismiss',
       saving: 'Saving…',
       publishTitle: 'New task',
-      publishSubtitle: 'New tasks land in “Awaiting start” by default; move them to “Queued” when you are ready.',
+      publishSubtitle: 'New tasks start as ideas; add one to the queue when you are ready.',
       modeSingle: 'Single',
       modeBatch: 'Batch',
       fieldTitle: 'Title',
@@ -768,11 +1006,11 @@ window.__ModuleLoader__.load({
       batchRequired: 'Add at least one task',
       titleTooLong: 'Title must be at most {max} characters',
       cwdInvalid: 'The working directory must be an absolute path',
-      submit: 'Publish',
-      submitting: 'Publishing…',
+      submit: 'Create',
+      submitting: 'Creating…',
       cancel: 'Cancel',
-      publishSuccess: 'Published {count} tasks',
-      publishSuccessOne: 'Published 1 task',
+      publishSuccess: 'Created {count} tasks',
+      publishSuccessOne: 'Created 1 task',
       editTitle: 'Edit task',
       editSubtitle: 'Change the title, description, directory or chain.',
       editSubmit: 'Save changes',
@@ -798,7 +1036,7 @@ window.__ModuleLoader__.load({
       loadFailed: 'Load failed',
       loadingState: 'Loading tasks…',
       stateLoadFailed: 'Refreshing state failed',
-      publishFailed: 'Publishing failed',
+      publishFailed: 'Creating the task failed',
       settingsFailed: 'Saving settings failed',
       actionFailed: 'Action failed',
       reorderFailed: 'Saving the order failed',
@@ -813,16 +1051,16 @@ window.__ModuleLoader__.load({
       runStarted: 'Started "{title}"',
       pausedToast: 'Paused "{title}"',
       resumedToast: 'Resumed "{title}"',
-      interruptedToast: 'Interrupted "{title}"',
+      interruptedToast: 'Stopped “{title}”',
       retriedToast: 'Requeued "{title}"',
-      blockedHint: 'Blocked: waiting for your answer or approval; you can also open the session.',
+      blockedHint: 'Waiting for you: answer in the session and the task continues.',
       pausedHint: 'Paused: resuming posts “continue this task” to the session.',
       noTasksYet: 'No tasks',
       queued: 'Queued',
       emptyTitle: 'No tasks yet',
-      emptyHint: 'Publish your first task and the secretary runs it automatically. You can also paste a batch.',
+      emptyHint: 'Write down what needs doing and I will line it up — one at a time, or paste a whole batch.',
       emptyCta: 'New task',
-      emptyCtaBatch: 'Publish a batch',
+      emptyCtaBatch: 'Batch create',
       crashTitle: 'The Task Butler panel hit an error',
       crashHint: 'Switch pages or reload and try again. If it keeps happening, report the console error to the plugin author.',
       searchPlaceholder: 'Search tasks…',
@@ -831,14 +1069,14 @@ window.__ModuleLoader__.load({
       unknownError: 'Unknown error',
 
       /* v4: awaiting-start lane + priority + settings dialog + cross-column drag */
-      statusIdea: 'To start',
-      columnIdeas: 'Awaiting start',
-      columnIdeasHint: 'Ideas and paused work · drag to Queued when ready',
-      emptyIdeasColumn: 'Nothing awaiting start yet',
-      emptyIdeasColumnHint: 'Park ideas and paused work here first',
-      emptyIdeasColumnAction: 'Jot one',
-      ideaHint: 'Tasks awaiting start never run automatically; drag one to Queued or use “Move to Queued” to begin.',
-      badgeIdea: 'To start',
+      statusIdea: 'Idea',
+      columnIdeas: 'Ideas',
+      columnIdeasHint: 'Ideas and not-yet-scheduled tasks — drag one to the queue when ready',
+      emptyIdeasColumn: 'No ideas yet',
+      emptyIdeasColumnHint: 'Ideas and not-yet-scheduled tasks live here',
+      emptyIdeasColumnAction: 'Save one',
+      ideaHint: 'Idea tasks never run automatically — drag one to Queue or choose “Add to queue”.',
+      badgeIdea: 'Idea',
       priorityLabel: 'Priority',
       priorityUrgent: 'Urgent',
       priorityHigh: 'High',
@@ -847,31 +1085,31 @@ window.__ModuleLoader__.load({
       priorityAll: 'All priorities',
       filterPriorityLabel: 'Filter by priority',
       fieldStatus: 'Place in',
-      fieldStatusHint: 'Tasks awaiting start do not run automatically; move them to Queued when ready',
-      statusOptionIdea: 'Awaiting start',
-      statusOptionPending: 'Queued',
-      promote: 'Move to Queued',
-      demote: 'Move back to awaiting start',
-      promotedToast: 'Moved “{title}” to Queued',
-      demotedToast: 'Moved “{title}” back to Awaiting start',
-      dragToPending: 'Drop to Queued',
-      dragToIdeas: 'Drop to Awaiting start',
+      fieldStatusHint: 'Idea tasks do not run automatically; add one to the queue when ready',
+      statusOptionIdea: 'Idea',
+      statusOptionPending: 'Queue',
+      promote: 'Add to queue',
+      demote: 'Back to ideas',
+      promotedToast: 'Added “{title}” to the queue',
+      demotedToast: 'Moved “{title}” back to ideas',
+      dragToPending: 'Drop into queue',
+      dragToIdeas: 'Drop into ideas',
       dragNotAllowed: 'This column does not accept that task',
       createdChip: 'Created {time}',
       updatedChip: 'Updated {time}',
       updatedAt: 'Updated',
       settingsSectionExecution: 'Execution',
-      settingsExecutionSub: 'Concurrency, default model and auto-claim',
-      settingsSectionNotify: 'Notifications',
+      settingsExecutionSub: 'Concurrency, default model and auto-run',
+      settingsSectionNotify: 'Desktop alerts',
       settingsNotifySub: 'How to be notified when tasks finish',
       settingsSectionReport: 'Daily report',
       settingsReportSub: 'Schedule and output directory',
       settingsDone: 'Done',
       settingsAutoSave: 'Changes save immediately',
       settingsSectionBackup: 'Data backups',
-      settingsSectionWebhook: 'Notifications',
-      webhookSub: 'Push key task and report progress to a webhook (Markdown)',
-      webhookEnableLabel: 'Enable notifications',
+      settingsSectionWebhook: 'Push notifications',
+      webhookSub: 'Key task, report and brief updates pushed to your webhook (Markdown)',
+      webhookEnableLabel: 'Enable push notifications',
       webhookEnableHint: 'Notifications are only pushed while on; you can configure and send a test while off',
       webhookUrl: 'Webhook URL',
       webhookUrlPlaceholder: 'https://example.com/webhook',
@@ -885,9 +1123,9 @@ window.__ModuleLoader__.load({
       webhookFormatDingtalk: 'DingTalk',
       webhookFormatSlack: 'Slack',
       webhookEvents: 'Events',
-      webhookEventClaimed: 'Task claimed',
+      webhookEventClaimed: 'Task started',
       webhookEventSucceeded: 'Task succeeded',
-      webhookEventBlocked: 'Task blocked',
+      webhookEventBlocked: 'Task waiting for you',
       webhookEventFailed: 'Task failed',
       webhookEventDailyReport: 'Daily report generated',
       webhookEventRetrospective: 'Retrospective generated',
@@ -901,7 +1139,7 @@ window.__ModuleLoader__.load({
       webhookLastLineIdle: 'Last: no record yet',
       webhookStatusOk: 'success',
       webhookStatusFailed: 'failed',
-      webhookSectionAria: 'Webhook notification settings',
+      webhookSectionAria: 'Push notification settings',
       backupSub: 'Automatically saved recovery points you can restore anytime',
       backupLoading: 'Loading backups…',
       backupEmpty: 'No backups yet',
@@ -920,8 +1158,8 @@ window.__ModuleLoader__.load({
       backupTaskCount: '{count} tasks',
       backupRefreshAria: 'Refresh backup list',
       backupRestoreAria: 'Restore the backup from {time}',
-      publishIdeaSuccess: 'Added {count} tasks to Awaiting start',
-      publishIdeaSuccessOne: 'Added 1 task to Awaiting start',
+      publishIdeaSuccess: 'Saved {count} ideas',
+      publishIdeaSuccessOne: 'Saved 1 idea',
 
       /* v6: per-column search/filter + 24h time + uniform card zones */
       columnSearchPlaceholder: 'Search this column…',
@@ -940,8 +1178,8 @@ window.__ModuleLoader__.load({
       contextEmpty: '—',
 
       /* v9: self-evolution / retrospectives / lessons / skills */
-      evolution: 'Self-evolution',
-      evolutionTitle: 'Retrospective · Self-evolution',
+      evolution: 'Retrospective & lessons',
+      evolutionTitle: 'Retrospective & lessons',
       evolutionSub: 'Review task progress and distil lessons and reusable skills',
       evolutionButton: 'Retrospective',
       retrospective: 'Retrospective',
@@ -965,8 +1203,8 @@ window.__ModuleLoader__.load({
       retrospectiveLastDate: 'Last retrospective',
       retrospectiveError: 'Last error',
       retrospectiveTabAria: 'Retrospectives, {count} in total',
-      evolutionLoading: 'Loading self-evolution data…',
-      evolutionLoadFailed: 'Loading self-evolution data failed',
+      evolutionLoading: 'Loading retrospective data…',
+      evolutionLoadFailed: 'Could not load retrospective data',
       evolutionStatusIdle: 'Not run yet',
       evolutionStatusRunning: 'Running',
       evolutionStatusOk: 'Succeeded',
@@ -1001,7 +1239,7 @@ window.__ModuleLoader__.load({
       lessonAddFailed: 'Adding the lesson failed',
       lessonUpdateFailed: 'Updating the lesson failed',
       lessonDeleteFailed: 'Deleting the lesson failed',
-      lessonFormHint: 'Lessons are injected into the prompts of claimed tasks (can be turned off in settings).',
+      lessonFormHint: 'Lessons are archived for reference only — never injected into task prompts.',
       categoryCorrection: 'Correction',
       categoryError: 'Error',
       categoryPreference: 'Preference',
@@ -1078,7 +1316,7 @@ window.__ModuleLoader__.load({
       evolutionSkillModeHint: 'Candidates need manual adoption; auto-enable puts them straight into the skill catalog.',
       evolutionDir: 'Retrospective directory',
       evolutionDirHint: 'Retrospective Markdown files are written here; the folder is created on demand.',
-      evolutionSection: 'Self-evolution',
+      evolutionSection: 'Retrospective & lessons',
       evolutionSectionSub: 'Review tasks, distil lessons and skills',
       evolutionLast: 'Last retrospective',
       evolutionLastPending: 'Not run yet',
@@ -1604,7 +1842,110 @@ window.__ModuleLoader__.load({
       '@media (prefers-reduced-motion: reduce){.dsh-ps-card::before{transition:none}}',
       '@media (max-width: 720px){.dsh-ps-evo-split{flex-direction:column}.dsh-ps-evo-list{width:100%;max-height:200px;flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--dsw-alias-border-l1)}.dsh-ps-evo-item{width:auto;min-width:160px}}',
       '@media (max-width: 640px){.dsh-ps-evo-form-grid{grid-template-columns:minmax(0,1fr)}.dsh-ps-evo-head-actions{width:100%;justify-content:flex-start;margin-left:0}.dsh-ps-evo-tabs{padding-left:12px;padding-right:12px}.dsh-ps-evo-tab{padding:0 11px}.dsh-ps-evo-scroll,.dsh-ps-evo-content-wrap{padding-left:14px;padding-right:14px}}',
-      '@media (prefers-reduced-motion: reduce){.dsh-ps-evo-tab,.dsh-ps-evo-item,.dsh-ps-evo-card,.dsh-ps-evo-entry-badge{transition:none}.dsh-ps-evo-panel,.dsh-ps-evo-card{animation:none}.dsh-ps-evo-tab:hover{background:transparent}}'
+      '@media (prefers-reduced-motion: reduce){.dsh-ps-evo-tab,.dsh-ps-evo-item,.dsh-ps-evo-card,.dsh-ps-evo-entry-badge{transition:none}.dsh-ps-evo-panel,.dsh-ps-evo-card{animation:none}.dsh-ps-evo-tab:hover{background:transparent}}',
+      // ---- v0.6: view shell / today workbench / notifications -----------------
+      '.dsh-ps-header-mid{display:flex;align-items:center;gap:10px;padding-top:3px;min-width:0}',
+      '.dsh-ps-views{display:inline-flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 4%,var(--dsw-alias-bg-layer-1))}',
+      '.dsh-ps-view-btn{display:inline-flex;align-items:center;justify-content:center;height:30px;padding:0 14px;border:0;border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12.5px;font-weight:600;line-height:1;white-space:nowrap;cursor:pointer;transition:background-color 200ms ease-out,color 200ms ease-out,box-shadow 200ms ease-out}',
+      '.dsh-ps-view-btn:hover:not([aria-selected="true"]){color:var(--dsw-alias-label-primary);background:color-mix(in srgb,var(--dsw-alias-label-primary) 6%,transparent)}',
+      '.dsh-ps-view-btn[aria-selected="true"]{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);box-shadow:0 1px 2px color-mix(in srgb,var(--dsw-alias-label-primary) 10%,transparent)}',
+      '.dsh-ps-view-btn:focus-visible{outline:2px solid color-mix(in srgb,var(--ps-violet) 55%,transparent);outline-offset:2px}',
+      '.dsh-ps-notif-wrap{position:relative;display:inline-flex;flex:none}',
+      '.dsh-ps-bell{position:relative;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:38px;height:38px;padding:0;border:1px solid var(--dsw-alias-border-l1);border-radius:14px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);cursor:pointer;transition:background-color 200ms ease-out,border-color 200ms ease-out,color 200ms ease-out,transform 200ms ease-out}',
+      '.dsh-ps-bell:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l2);transform:translateY(-1px)}',
+      '.dsh-ps-bell[data-unread="true"]{color:color-mix(in srgb,var(--ps-violet-deep) 62%,var(--dsw-alias-label-primary));border-color:color-mix(in srgb,var(--ps-violet) 24%,var(--dsw-alias-border-l1))}',
+      '.dsh-ps-bell:focus-visible{outline:2px solid color-mix(in srgb,var(--ps-violet) 55%,transparent);outline-offset:2px}',
+      '.dsh-ps-bell-badge{position:absolute;top:-5px;right:-5px;display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:17px;padding:0 4px;border-radius:999px;background:var(--ps-rose);color:var(--ps-white);font-size:10px;font-weight:700;line-height:17px;font-variant-numeric:tabular-nums;box-shadow:0 2px 6px color-mix(in srgb,var(--ps-rose) 45%,transparent)}',
+      '.dsh-ps-notif-popover{position:absolute;top:calc(100% + 8px);right:0;z-index:70;display:flex;flex-direction:column;gap:2px;width:min(360px,calc(100vw - 40px));max-height:min(72vh,560px);overflow-y:auto;padding:14px;border:1px solid var(--dsw-alias-border-l1);border-radius:20px;background:var(--dsw-alias-bg-layer-1);box-shadow:0 28px 70px -30px color-mix(in srgb,var(--dsw-alias-label-primary) 55%,transparent),0 4px 14px -6px color-mix(in srgb,var(--dsw-alias-label-primary) 18%,transparent);animation:dsh-ps-pop-in 180ms ease-out}',
+      '.dsh-ps-notif-head{display:flex;align-items:center;gap:8px;padding:0 2px 8px}',
+      '.dsh-ps-notif-title{font-size:13.5px;font-weight:600;line-height:19px}',
+      '.dsh-ps-notif-unread{display:inline-flex;align-items:center;height:18px;padding:0 7px;border-radius:999px;background:color-mix(in srgb,var(--ps-rose) 12%,transparent);color:color-mix(in srgb,var(--ps-rose) 62%,var(--dsw-alias-label-primary));font-size:10.5px;font-weight:700;line-height:1}',
+      '.dsh-ps-notif-section{padding:9px 0 2px;border-top:1px solid var(--dsw-alias-border-l1)}',
+      '.dsh-ps-notif-section-title{margin:0 0 5px;padding:0 2px;font-size:10.5px;font-weight:600;letter-spacing:.03em;color:var(--dsw-alias-label-secondary)}',
+      '.dsh-ps-notif-item{display:flex;align-items:center;gap:9px;width:100%;min-width:0;min-height:38px;padding:7px 8px;border:0;border-radius:12px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;text-align:left;cursor:pointer;transition:background-color 160ms ease-out}',
+      '.dsh-ps-notif-item:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary) 5%,transparent)}',
+      '.dsh-ps-notif-item:focus-visible{outline:2px solid color-mix(in srgb,var(--ps-violet) 55%,transparent);outline-offset:-1px}',
+      '.dsh-ps-notif-item-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;line-height:18px;font-weight:600}',
+      '.dsh-ps-notif-item-hint{flex:none;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary);white-space:nowrap}',
+      '.dsh-ps-notif-empty{margin:0;padding:16px 8px;font-size:12.5px;line-height:18px;color:var(--dsw-alias-label-secondary);text-align:center}',
+      '.dsh-ps-notif-foot{display:flex;justify-content:flex-end;padding-top:9px;margin-top:4px;border-top:1px solid var(--dsw-alias-border-l1)}',
+      '.dsh-ps-today{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}',
+      '.dsh-ps-today-main{display:flex;flex-direction:column;gap:14px;min-width:0}',
+      '.dsh-ps-today-side{display:flex;flex-direction:column;gap:14px;min-width:0}',
+      '.dsh-ps-greet{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:2px 2px 0}',
+      '.dsh-ps-greet-main{display:flex;flex-direction:column;gap:4px;min-width:0}',
+      '.dsh-ps-greet-date{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;line-height:17px;color:color-mix(in srgb,var(--ps-violet-deep) 60%,var(--dsw-alias-label-secondary));font-variant-numeric:tabular-nums}',
+      '.dsh-ps-greet-line{margin:0;font-size:17px;font-weight:600;line-height:25px;letter-spacing:-.015em;overflow-wrap:anywhere}',
+      '.dsh-ps-watch{display:flex;align-items:center;gap:12px;padding:10px 14px;border:1px solid color-mix(in srgb,var(--ps-violet) 18%,var(--dsw-alias-border-l1));border-radius:16px;background:color-mix(in srgb,var(--ps-violet) 6%,var(--dsw-alias-bg-layer-1));box-shadow:0 1px 2px color-mix(in srgb,var(--dsw-alias-label-primary) 5%,transparent)}',
+      '.dsh-ps-watch-label{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;white-space:nowrap;color:color-mix(in srgb,var(--ps-violet-deep) 62%,var(--dsw-alias-label-primary))}',
+      '.dsh-ps-watch-metrics{display:flex;align-items:center;gap:10px;font-size:11.5px;line-height:17px;color:var(--dsw-alias-label-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}',
+      '.dsh-ps-capture{display:flex;align-items:center;gap:10px;min-width:0;padding:9px 9px 9px 14px;border:1px solid var(--dsw-alias-border-l1);border-radius:18px;background:var(--dsw-alias-bg-layer-1);box-shadow:0 1px 2px color-mix(in srgb,var(--dsw-alias-label-primary) 6%,transparent),0 18px 40px -32px color-mix(in srgb,var(--ps-violet) 40%,transparent);transition:border-color 200ms ease-out,box-shadow 200ms ease-out}',
+      '.dsh-ps-capture:focus-within{border-color:color-mix(in srgb,var(--ps-violet) 38%,var(--dsw-alias-border-l1));box-shadow:0 0 0 4px color-mix(in srgb,var(--ps-violet) 10%,transparent)}',
+      '.dsh-ps-capture-icon{flex:none;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:11px;background:color-mix(in srgb,var(--ps-violet) 10%,transparent);color:color-mix(in srgb,var(--ps-violet-deep) 62%,var(--dsw-alias-label-primary))}',
+      '.dsh-ps-capture-input{flex:1;min-width:0;height:38px;padding:0;border:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13.5px;line-height:20px;outline:none}',
+      '.dsh-ps-capture-input::placeholder{color:var(--dsw-alias-label-secondary)}',
+      '.dsh-ps-capture-submit{flex:none;display:inline-flex;align-items:center;justify-content:center;gap:6px;height:38px;padding:0 18px;border:0;border-radius:999px;background:linear-gradient(135deg,var(--ps-violet) 0%,var(--ps-indigo) 100%);color:var(--ps-white);font:inherit;font-size:13px;font-weight:600;line-height:1;white-space:nowrap;cursor:pointer;box-shadow:0 10px 22px -12px color-mix(in srgb,var(--ps-violet) 58%,transparent);transition:filter 160ms ease-out,transform 160ms ease-out,opacity 160ms ease-out}',
+      '.dsh-ps-capture-submit:hover:not(:disabled){filter:brightness(1.05);transform:translateY(-1px)}',
+      '.dsh-ps-capture-submit:disabled{cursor:not-allowed;opacity:.45;transform:none}',
+      '.dsh-ps-capture-submit:focus-visible{outline:2px solid color-mix(in srgb,var(--ps-violet) 55%,transparent);outline-offset:2px}',
+      '.dsh-ps-today-section{display:flex;flex-direction:column;gap:10px;min-width:0;padding:15px 16px;border:1px solid var(--dsw-alias-border-l1);border-radius:22px;background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 90%,transparent);box-shadow:0 1px 2px color-mix(in srgb,var(--dsw-alias-label-primary) 5%,transparent)}',
+      '.dsh-ps-today-sec-head{display:flex;align-items:center;gap:8px;min-width:0}',
+      '.dsh-ps-today-sec-icon{display:inline-flex;flex:none;color:color-mix(in srgb,var(--ps-violet-deep) 56%,var(--dsw-alias-label-secondary))}',
+      '.dsh-ps-today-sec-title{margin:0;font-size:14px;font-weight:600;line-height:20px;letter-spacing:-.01em;white-space:nowrap}',
+      '.dsh-ps-today-sec-count{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;padding:0 7px;border-radius:999px;background:color-mix(in srgb,var(--ps-violet) 11%,transparent);color:color-mix(in srgb,var(--ps-violet-deep) 62%,var(--dsw-alias-label-primary));font-size:11px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}',
+      '.dsh-ps-today-sec-grow{flex:1;min-width:4px}',
+      '.dsh-ps-today-empty{margin:0;padding:12px 4px 6px;font-size:12.5px;line-height:19px;color:var(--dsw-alias-label-secondary);text-align:center}',
+      '.dsh-ps-today-list{display:flex;flex-direction:column;gap:8px;min-width:0;margin:0;padding:0;list-style:none}',
+      '.dsh-ps-today-row{display:flex;align-items:center;gap:10px;min-width:0;padding:9px 11px;border:1px solid var(--dsw-alias-border-l1);border-radius:15px;background:var(--dsw-alias-bg-layer-1)}',
+      '.dsh-ps-today-row[data-clickable="true"]{cursor:pointer;transition:border-color 160ms ease-out,background-color 160ms ease-out}',
+      '.dsh-ps-today-row[data-clickable="true"]:hover{border-color:var(--dsw-alias-border-l2);background:color-mix(in srgb,var(--dsw-alias-label-primary) 2%,var(--dsw-alias-bg-layer-1))}',
+      '.dsh-ps-today-row[data-kind="blocked"]{border-left:3px solid color-mix(in srgb,var(--ps-amber) 62%,transparent);padding-left:9px}',
+      '.dsh-ps-today-row[data-kind="paused"]{border-left:3px solid color-mix(in srgb,var(--ps-amber) 40%,transparent);padding-left:9px}',
+      '.dsh-ps-today-row[data-kind="failed"]{border-left:3px solid color-mix(in srgb,var(--ps-rose) 55%,transparent);padding-left:9px}',
+      '.dsh-ps-today-main-col{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}',
+      '.dsh-ps-today-title{font-size:13px;font-weight:600;line-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dsh-ps-today-hint{font-size:11.5px;line-height:16px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dsh-ps-today-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex:none;justify-content:flex-end}',
+      '.dsh-ps-today-time{flex:none;min-width:42px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}',
+      '.dsh-ps-today-done-body{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}',
+      '.dsh-ps-today-result{font-size:12px;line-height:17px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dsh-ps-today-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-top:2px}',
+      '.dsh-ps-today-foot-text{font-size:11.5px;line-height:17px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}',
+      '.dsh-ps-brief-card{background:radial-gradient(120% 120% at 100% 0%,color-mix(in srgb,var(--ps-violet) 9%,transparent),transparent 62%),color-mix(in srgb,var(--dsw-alias-bg-layer-1) 92%,transparent)}',
+      '.dsh-ps-brief-card[data-state="unsupported"]{background:color-mix(in srgb,var(--dsw-alias-label-primary) 2%,var(--dsw-alias-bg-layer-1));border-style:dashed}',
+      '.dsh-ps-brief-snippet{margin:0;font-size:12.5px;line-height:19px;color:var(--dsw-alias-label-secondary);display:-webkit-box;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}',
+      '.dsh-ps-brief-meta{font-size:11.5px;line-height:17px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}',
+      '.dsh-ps-brief-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
+      '.dsh-ps-brief-actions .dsh-ps-btn{height:36px}',
+      '.dsh-ps-side-card{padding:14px 16px}',
+      '.dsh-ps-ledger-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}',
+      '.dsh-ps-ledger-cell{display:flex;flex-direction:column;gap:2px;min-width:0;padding:9px 11px;border-radius:14px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 4%,transparent)}',
+      '.dsh-ps-ledger-value{font-size:18px;font-weight:700;line-height:23px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}',
+      '.dsh-ps-ledger-label{font-size:11px;line-height:15px;color:var(--dsw-alias-label-secondary);font-weight:500}',
+      '.dsh-ps-side-hint{margin:0;font-size:11.5px;line-height:17px;color:var(--dsw-alias-label-secondary)}',
+      '.dsh-ps-shortcuts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}',
+      '.dsh-ps-shortcut{display:inline-flex;align-items:center;justify-content:flex-start;gap:7px;height:38px;padding:0 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:14px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;font-weight:600;white-space:nowrap;cursor:pointer;transition:border-color 160ms ease-out,background-color 160ms ease-out,transform 160ms ease-out}',
+      '.dsh-ps-shortcut:hover{border-color:var(--dsw-alias-border-l2);background:color-mix(in srgb,var(--dsw-alias-label-primary) 3%,var(--dsw-alias-bg-layer-1));transform:translateY(-1px)}',
+      '.dsh-ps-shortcut:focus-visible{outline:2px solid color-mix(in srgb,var(--ps-violet) 55%,transparent);outline-offset:2px}',
+      '.dsh-ps-shortcut span{overflow:hidden;text-overflow:ellipsis}',
+      '.dsh-ps-webhook-line{display:flex;align-items:center;gap:8px;min-width:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}',
+      '.dsh-ps-webhook-line strong{color:var(--dsw-alias-label-primary);font-weight:600}',
+      '.dsh-ps-today-shell{display:flex;flex-direction:column;gap:14px;min-width:0}',
+      '.dsh-ps-today .dsh-ps-btn,.dsh-ps-today .dsh-ps-btn-sm{height:36px}',
+      '.dsh-ps-brief-drawer{width:min(720px,100%)}',
+      '.dsh-ps-log-list{display:flex;flex-direction:column;gap:7px;max-height:min(58vh,540px);overflow-y:auto;padding:2px}',
+      '.dsh-ps-log-row{display:flex;align-items:flex-start;gap:10px;min-width:0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:14px;background:var(--dsw-alias-bg-layer-1)}',
+      '.dsh-ps-log-main{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0}',
+      '.dsh-ps-log-event{font-size:12.5px;font-weight:600;line-height:18px}',
+      '.dsh-ps-log-meta{font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}',
+      '.dsh-ps-log-error{margin:0;font-size:11.5px;line-height:17px;color:color-mix(in srgb,var(--ps-rose) 62%,var(--dsw-alias-label-primary));overflow-wrap:anywhere}',
+      '.dsh-ps-log-state{display:inline-flex;align-items:center;flex:none;height:20px;padding:0 8px;border-radius:999px;font-size:10.5px;font-weight:700;line-height:1}',
+      '.dsh-ps-log-state[data-ok="true"]{background:color-mix(in srgb,var(--ps-mint) 13%,transparent);color:color-mix(in srgb,var(--ps-mint) 55%,var(--dsw-alias-label-primary))}',
+      '.dsh-ps-log-state[data-ok="false"]{background:color-mix(in srgb,var(--ps-rose) 12%,transparent);color:color-mix(in srgb,var(--ps-rose) 62%,var(--dsw-alias-label-primary))}',
+      '@media (max-width: 1000px){.dsh-ps-today{grid-template-columns:minmax(0,1fr)}.dsh-ps-today-side{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));align-items:start}}',
+      '@media (max-width: 900px){.dsh-ps-header-mid{order:3;width:100%;padding-top:0}}',
+      '@media (max-width: 640px){.dsh-ps-header-actions .dsh-ps-bell{width:100%}.dsh-ps-today-section{padding:13px 13px}.dsh-ps-today-row{flex-wrap:wrap}.dsh-ps-today-actions{width:100%;justify-content:flex-start}.dsh-ps-capture{padding:8px 8px 8px 12px}.dsh-ps-capture-submit{padding:0 14px}.dsh-ps-ledger-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dsh-ps-shortcuts{grid-template-columns:minmax(0,1fr)}}',
+      '@media (prefers-reduced-motion: reduce){.dsh-ps-view-btn,.dsh-ps-bell,.dsh-ps-capture,.dsh-ps-capture-submit,.dsh-ps-today-row,.dsh-ps-shortcut,.dsh-ps-notif-item{transition:none}.dsh-ps-notif-popover{animation:none}}',
     ].join('\n')
 
     // ------------------------------------------------------------------ helpers
@@ -2102,7 +2443,7 @@ window.__ModuleLoader__.load({
         format: 'generic',
         secretHeader: 'Authorization',
         secret: '',
-        events: { claimed: true, succeeded: true, blocked: true, failed: true, dailyReport: true, retrospective: true },
+        events: { claimed: true, succeeded: true, blocked: true, failed: true, dailyReport: true, morningBrief: true, retrospective: true },
         lastStatus: 'idle',
         lastAt: null,
         lastEvent: null,
@@ -2150,6 +2491,7 @@ window.__ModuleLoader__.load({
       if (key === 'blocked') return t('webhookEventBlocked')
       if (key === 'failed') return t('webhookEventFailed')
       if (key === 'dailyReport') return t('webhookEventDailyReport')
+      if (key === 'morningBrief') return t('webhookEventMorningBrief')
       if (key === 'retrospective') return t('webhookEventRetrospective')
       if (key === 'test') return t('webhookEventTest')
       return typeof key === 'string' && key !== '' ? key : t('webhookEventTest')
@@ -2186,6 +2528,187 @@ window.__ModuleLoader__.load({
         return { items: items, settings: settings }
       }
       return { items: [], settings: null }
+    }
+
+
+    // ---- v0.6: morning brief settings / meta. Mirrors the daily-report
+    // normalisation so an older Host (no morningBrief field) keeps working.
+
+    function defaultMorningBriefSettings() {
+      return {
+        enabled: true,
+        time: '08:30',
+        dir: '',
+        lastDate: null,
+        lastStatus: 'idle',
+        lastError: null,
+        lastGeneratedAt: null,
+        generatingDate: null,
+      }
+    }
+
+    function normalizeMorningBriefSettings(raw, previous) {
+      const base = previous || defaultMorningBriefSettings()
+      if (!raw || typeof raw !== 'object') return Object.assign({}, base)
+      let lastStatus = base.lastStatus
+      if (raw.lastStatus === 'idle' || raw.lastStatus === 'running' || raw.lastStatus === 'ok' || raw.lastStatus === 'failed') {
+        lastStatus = raw.lastStatus
+      }
+      return {
+        enabled: typeof raw.enabled === 'boolean' ? raw.enabled : base.enabled,
+        time: isValidReportTime(raw.time) ? raw.time : base.time,
+        dir: typeof raw.dir === 'string' && raw.dir !== '' ? raw.dir : base.dir,
+        lastDate: typeof raw.lastDate === 'string' && raw.lastDate !== '' ? raw.lastDate : null,
+        lastStatus: lastStatus,
+        lastError: typeof raw.lastError === 'string' && raw.lastError !== '' ? raw.lastError : null,
+        lastGeneratedAt: typeof raw.lastGeneratedAt === 'number' && isFinite(raw.lastGeneratedAt) && raw.lastGeneratedAt > 0
+          ? raw.lastGeneratedAt
+          : null,
+        generatingDate: typeof raw.generatingDate === 'string' && raw.generatingDate !== '' ? raw.generatingDate : null,
+      }
+    }
+
+    function briefStatusText(t, settings) {
+      if (!settings) return t('briefStatusIdle')
+      if (settings.lastStatus === 'running') return t('briefStatusRunning')
+      if (settings.lastStatus === 'ok') return t('briefStatusOk')
+      if (settings.lastStatus === 'failed') return t('briefStatusFailed')
+      return t('briefStatusIdle')
+    }
+
+    function briefStatusTone(settings) {
+      if (!settings) return 'idle'
+      if (settings.lastStatus === 'running') return 'running'
+      if (settings.lastStatus === 'ok') return 'ok'
+      if (settings.lastStatus === 'failed') return 'failed'
+      return 'idle'
+    }
+
+    function normalizeBriefItem(raw) {
+      if (!raw || typeof raw !== 'object') return null
+      const date = typeof raw.date === 'string' ? raw.date : ''
+      if (date === '') return null
+      return {
+        date: date,
+        path: typeof raw.path === 'string' ? raw.path : '',
+        bytes: typeof raw.bytes === 'number' && isFinite(raw.bytes) ? raw.bytes : 0,
+        updatedAt: typeof raw.updatedAt === 'number' && isFinite(raw.updatedAt) ? raw.updatedAt : 0,
+      }
+    }
+
+    function normalizeBriefItems(raw) {
+      const items = []
+      if (!Array.isArray(raw)) return items
+      for (let i = 0; i < raw.length; i += 1) {
+        const item = normalizeBriefItem(raw[i])
+        if (item) items.push(item)
+      }
+      items.sort(function (a, b) { return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0) })
+      return items
+    }
+
+    function parseBriefMeta(raw) {
+      if (Array.isArray(raw)) return { items: normalizeBriefItems(raw), settings: null }
+      if (raw && typeof raw === 'object') {
+        const items = Array.isArray(raw.briefs) ? normalizeBriefItems(raw.briefs) : normalizeBriefItems(raw.items)
+        const settings = raw.settings && typeof raw.settings === 'object' ? normalizeMorningBriefSettings(raw.settings, null) : null
+        return { items: items, settings: settings }
+      }
+      return { items: [], settings: null }
+    }
+
+    // Morning-brief card: first two readable lines of the Markdown body.
+    function briefSnippetFromMarkdown(content) {
+      if (typeof content !== 'string' || content.trim() === '') return ''
+      const lines = content.replace(/\r\n?/g, '\n').split('\n')
+      const picked = []
+      for (let i = 0; i < lines.length && picked.length < 2; i += 1) {
+        let line = lines[i].replace(/\s+/g, ' ').trim()
+        if (line === '') continue
+        if (line.indexOf('#') === 0 || line.indexOf('---') === 0 || line.indexOf('```') === 0 || line.indexOf('>') === 0) continue
+        line = line.replace(/^[-*+]\s+/, '').replace(/^\d+[.)]\s+/, '')
+        if (line === '') continue
+        picked.push(line)
+      }
+      return picked.join(' ').slice(0, 140)
+    }
+
+    // One-line task outcome: prefer the stored final answer, then the last
+    // assistant message, then the error, so old session tasks degrade sanely.
+    function taskResultOneLine(task, max) {
+      if (!task || typeof task !== 'object') return ''
+      const limit = typeof max === 'number' && max > 0 ? max : 80
+      const result = task.result || null
+      const candidates = [
+        result && typeof result.finalAnswer === 'string' ? result.finalAnswer : '',
+        typeof task.lastMessage === 'string' ? task.lastMessage : '',
+        typeof task.error === 'string' ? task.error : '',
+      ]
+      for (let i = 0; i < candidates.length; i += 1) {
+        const text = firstSentence(candidates[i], limit)
+        if (text !== '') return text
+      }
+      return ''
+    }
+
+    function firstSentence(value, max) {
+      if (typeof value !== 'string' || value.trim() === '') return ''
+      const limit = typeof max === 'number' && max > 0 ? max : 80
+      const flat = value.replace(/\r\n?/g, '\n').replace(/\s+/g, ' ').trim()
+      let cut = flat.length
+      const stops = ['。', '！', '？', '；', '. ', '! ', '? ', '; ']
+      for (let i = 0; i < stops.length; i += 1) {
+        const index = flat.indexOf(stops[i], 8)
+        if (index >= 0 && index < cut) cut = index + stops[i].length
+      }
+      const text = flat.slice(0, cut).trim()
+      if (text.length <= limit) return text
+      return text.slice(0, limit).replace(/[，、；：,;:\s]+$/, '') + '…'
+    }
+
+    function normalizeWebhookLogItem(raw) {
+      if (!raw || typeof raw !== 'object') return null
+      const at = typeof raw.at === 'number' && isFinite(raw.at) && raw.at > 0 ? raw.at : 0
+      if (at <= 0) return null
+      return {
+        at: at,
+        event: typeof raw.event === 'string' && raw.event !== '' ? raw.event : 'test',
+        ok: raw.ok === true,
+        httpStatus: typeof raw.httpStatus === 'number' && isFinite(raw.httpStatus) ? raw.httpStatus : null,
+        error: typeof raw.error === 'string' ? raw.error : '',
+        responseSnippet: typeof raw.responseSnippet === 'string' ? raw.responseSnippet : '',
+      }
+    }
+
+    function normalizeWebhookLog(raw) {
+      const payload = raw && typeof raw === 'object' ? raw : {}
+      const list = Array.isArray(payload.log) ? payload.log : (Array.isArray(payload.entries) ? payload.entries : [])
+      const items = []
+      for (let i = 0; i < list.length; i += 1) {
+        const item = normalizeWebhookLogItem(list[i])
+        if (item) items.push(item)
+      }
+      return items
+    }
+
+    function readLastSeenTime() {
+      try {
+        if (typeof localStorage === 'undefined') return 0
+        const raw = localStorage.getItem(LAST_SEEN_KEY)
+        const value = raw === null ? 0 : parseInt(raw, 10)
+        return isFinite(value) && value > 0 ? value : 0
+      } catch (error) {
+        return 0
+      }
+    }
+
+    function writeLastSeenTime(value) {
+      try {
+        if (typeof localStorage === 'undefined') return
+        localStorage.setItem(LAST_SEEN_KEY, String(value))
+      } catch (error) {
+        // storage may be unavailable in private contexts; read state stays usable
+      }
     }
 
     const MAX_BACKUP_ROWS = 5
@@ -2913,6 +3436,7 @@ window.__ModuleLoader__.load({
         counts: { idea: 0, pending: 0, running: 0, paused: 0, blocked: 0, done: 0, failed: 0, cancelled: 0 },
         runningCount: 0,
         reports: { phase: 'idle', items: [], settings: null, error: null },
+        briefs: { phase: 'idle', items: [], settings: null, error: null, supported: true },
         evolution: null,
         error: null,
         models: null,
@@ -2925,6 +3449,7 @@ window.__ModuleLoader__.load({
       let refreshing = false
       let refreshQueued = false
       let reportsRefreshing = false
+      let briefsRefreshing = false
       let pollTimer = null
       let errorTimer = null
       let lastErrorAt = 0
@@ -3019,6 +3544,7 @@ window.__ModuleLoader__.load({
           autoStart: true,
           notifyOnDone: true,
           dailyReport: defaultDailyReportSettings(),
+          morningBrief: defaultMorningBriefSettings(),
           webhook: defaultWebhookSettings(),
           evolution: defaultEvolutionSettings(),
         }
@@ -3030,6 +3556,7 @@ window.__ModuleLoader__.load({
           autoStart: typeof raw.autoStart === 'boolean' ? raw.autoStart : base.autoStart,
           notifyOnDone: typeof raw.notifyOnDone === 'boolean' ? raw.notifyOnDone : base.notifyOnDone,
           dailyReport: normalizeDailyReportSettings(raw.dailyReport, base.dailyReport),
+          morningBrief: normalizeMorningBriefSettings(raw.morningBrief, base.morningBrief),
           webhook: coerceWebhookSettings(raw.webhook, base.webhook),
           evolution: coerceEvolutionSettings(raw.evolution, base.evolution),
         }
@@ -3058,6 +3585,12 @@ window.__ModuleLoader__.load({
         if (snapshot.reports && snapshot.reports.settings) return snapshot.reports.settings
         if (snapshot.settings && snapshot.settings.dailyReport) return snapshot.settings.dailyReport
         return defaultDailyReportSettings()
+      }
+
+      function briefSettingsOf(snapshot) {
+        if (snapshot.briefs && snapshot.briefs.settings) return snapshot.briefs.settings
+        if (snapshot.settings && snapshot.settings.morningBrief) return snapshot.settings.morningBrief
+        return defaultMorningBriefSettings()
       }
 
       function applyState(payload) {
@@ -3091,6 +3624,22 @@ window.__ModuleLoader__.load({
             error: reports.error,
           }
         }
+        let briefs = snap.briefs
+        if (payload.briefs !== undefined) {
+          const briefMeta = parseBriefMeta(payload.briefs)
+          const briefSettings = briefMeta.settings || (settings ? settings.morningBrief : briefs.settings) || null
+          briefs = { phase: 'ready', items: briefMeta.items, settings: briefSettings, error: null, supported: true }
+        } else if (settings && payload.settings !== undefined) {
+          // Older Host: /state has no briefs field. Keep the state shape stable
+          // and let the UI show its "Host does not support briefs" fallback.
+          briefs = {
+            phase: 'ready',
+            items: snap.briefs.items,
+            settings: null,
+            error: null,
+            supported: false,
+          }
+        }
         set({
           phase: 'ready',
           rev: typeof payload.rev === 'number' ? payload.rev : snap.rev,
@@ -3099,6 +3648,7 @@ window.__ModuleLoader__.load({
           counts: counts,
           runningCount: runningCount,
           reports: reports,
+          briefs: briefs,
           // /state only carries the compact evolution meta; a payload without it
           // (older Host) must not wipe the current value.
           evolution: payload.evolution && typeof payload.evolution === 'object'
@@ -3257,6 +3807,13 @@ window.__ModuleLoader__.load({
                 settings: next ? next.dailyReport : snap.reports.settings,
                 error: snap.reports.error,
               },
+              briefs: {
+                phase: snap.briefs.phase,
+                items: snap.briefs.items,
+                settings: next ? next.morningBrief : snap.briefs.settings,
+                error: snap.briefs.error,
+                supported: snap.briefs.supported,
+              },
             })
           }
           if (typeof result.data.rev === 'number') set({ rev: result.data.rev })
@@ -3278,6 +3835,13 @@ window.__ModuleLoader__.load({
                 items: snap.reports.items,
                 settings: next ? next.dailyReport : snap.reports.settings,
                 error: snap.reports.error,
+              },
+              briefs: {
+                phase: snap.briefs.phase,
+                items: snap.briefs.items,
+                settings: next ? next.morningBrief : snap.briefs.settings,
+                error: snap.briefs.error,
+                supported: snap.briefs.supported,
               },
             })
           }
@@ -3423,6 +3987,89 @@ window.__ModuleLoader__.load({
         }, t('reportsContentFailed'))
       }
 
+      // ---- v0.6: morning briefs --------------------------------------------
+      async function refreshBriefs() {
+        if (disposed || briefsRefreshing) return { ok: false, error: null }
+        briefsRefreshing = true
+        try {
+          const payload = await request('/briefs')
+          if (disposed) return { ok: true, data: payload }
+          const meta = parseBriefMeta(payload)
+          const settingsNext = meta.settings || briefSettingsOf(snap)
+          set({
+            briefs: { phase: 'ready', items: meta.items, settings: settingsNext, error: null, supported: true },
+            settings: snap.settings
+              ? Object.assign({}, snap.settings, { morningBrief: settingsNext })
+              : snap.settings,
+          })
+          return { ok: true, data: payload }
+        } catch (error) {
+          if (disposed) return { ok: false, error: t('briefsLoadFailed') }
+          const message = genericError(error)
+          set({
+            briefs: {
+              phase: snap.briefs.phase === 'idle' ? 'error' : snap.briefs.phase,
+              items: snap.briefs.items,
+              settings: snap.briefs.settings,
+              error: message,
+              supported: snap.briefs.supported !== false,
+            },
+          })
+          return { ok: false, error: message }
+        } finally {
+          briefsRefreshing = false
+        }
+      }
+
+      function markBriefGenerating(day) {
+        const current = briefSettingsOf(snap)
+        const next = normalizeMorningBriefSettings(Object.assign({}, current, {
+          lastStatus: 'running',
+          generatingDate: day,
+          lastError: '',
+        }), current)
+        set({
+          briefs: {
+            phase: snap.briefs.phase,
+            items: snap.briefs.items,
+            settings: next,
+            error: snap.briefs.error,
+            supported: snap.briefs.supported,
+          },
+          settings: snap.settings ? Object.assign({}, snap.settings, { morningBrief: next }) : snap.settings,
+        })
+      }
+
+      async function generateBrief(date) {
+        const day = typeof date === 'string' && date !== '' ? date : todayKey()
+        const result = await runWrite(function () {
+          return request('/briefs/generate', { method: 'POST', body: { date: day } })
+        }, t('briefsGenerateFailed'))
+        if (result.ok) {
+          markBriefGenerating(result.data && typeof result.data.date === 'string' ? result.data.date : day)
+          void refreshBriefs()
+        }
+        return result
+      }
+
+      async function loadBriefContent(date) {
+        if (typeof date !== 'string' || date === '') return { ok: false, error: t('briefsNoSelection') }
+        return runWrite(function () {
+          return request('/briefs/content?date=' + encodeURIComponent(date))
+        }, t('briefsContentFailed'))
+      }
+
+      // Read-only webhook delivery diagnostics (GET /webhook/log). Kept out of
+      // the global error banner: the delivery-log dialog shows failures inline.
+      async function loadWebhookLog() {
+        try {
+          const payload = await request('/webhook/log')
+          return { ok: true, data: { items: normalizeWebhookLog(payload) } }
+        } catch (error) {
+          return { ok: false, error: genericError(error) }
+        }
+      }
+
       // ---- v9: self-evolution. Detail requests live in the drawer; the 1.5s
       // /state poll keeps the compact meta (badge, settings status) fresh.
       async function loadEvolution() {
@@ -3550,6 +4197,15 @@ window.__ModuleLoader__.load({
         refreshReports: refreshReports,
         generateReport: generateReport,
         loadReportContent: loadReportContent,
+        refreshBriefs: refreshBriefs,
+        generateBrief: generateBrief,
+        loadBriefContent: loadBriefContent,
+        loadWebhookLog: loadWebhookLog,
+        briefSettings: function () { return briefSettingsOf(snap) },
+        briefGenerating: function () {
+          const settings = briefSettingsOf(snap)
+          return settings.lastStatus === 'running' || Boolean(settings.generatingDate)
+        },
         reportSettings: function () { return reportSettingsOf(snap) },
         reportGenerating: function () { return reportSettingsOf(snap).lastStatus === 'running' || Boolean(reportSettingsOf(snap).generatingDate) },
         evolutionSettings: function () { return snap.settings && snap.settings.evolution ? snap.settings.evolution : defaultEvolutionSettings() },
@@ -4427,6 +5083,7 @@ window.__ModuleLoader__.load({
       const settings = props.settings
       const catalog = props.models && typeof props.models === 'object' ? props.models : null
       const reportSettings = props.reportSettings || (settings ? settings.dailyReport : null) || null
+      const briefSettings = props.briefSettings || (settings ? settings.morningBrief : null) || defaultMorningBriefSettings()
       const evolutionSettings = (settings && settings.evolution) || defaultEvolutionSettings()
       const dialogRef = React.useRef(null)
       const doneRef = React.useRef(null)
@@ -4437,6 +5094,11 @@ window.__ModuleLoader__.load({
       const [draftDir, setDraftDir] = React.useState(reportSettings ? reportSettings.dir : '')
       const [pickingReportDir, setPickingReportDir] = React.useState(false)
       const [reportFieldError, setReportFieldError] = React.useState(null)
+      const [draftBriefTime, setDraftBriefTime] = React.useState(briefSettings.time)
+      const [draftBriefDir, setDraftBriefDir] = React.useState(briefSettings.dir)
+      const [pickingBriefDir, setPickingBriefDir] = React.useState(false)
+      const [briefFieldError, setBriefFieldError] = React.useState(null)
+      const [briefGeneratingLocal, setBriefGeneratingLocal] = React.useState(false)
       const [draftEvolutionTime, setDraftEvolutionTime] = React.useState(evolutionSettings.time)
       const [draftEvolutionDir, setDraftEvolutionDir] = React.useState(evolutionSettings.dir)
       const [pickingEvolutionDir, setPickingEvolutionDir] = React.useState(false)
@@ -4477,6 +5139,11 @@ window.__ModuleLoader__.load({
         setDraftTime(reportSettings.time)
         setDraftDir(reportSettings.dir)
       }, [reportSettings ? reportSettings.time : '', reportSettings ? reportSettings.dir : ''])
+
+      React.useEffect(function () {
+        setDraftBriefTime(briefSettings.time)
+        setDraftBriefDir(briefSettings.dir)
+      }, [briefSettings.time, briefSettings.dir])
 
       React.useEffect(function () {
         setDraftEvolutionTime(evolutionSettings.time)
@@ -4622,6 +5289,86 @@ window.__ModuleLoader__.load({
       function generateReportNow() {
         if (props.reportGenerating) return
         props.onGenerateReport(todayKey())
+      }
+
+      // ---- v0.6: morning brief settings (write straight through to saveSettings)
+      const briefBusy = props.briefGenerating === true || briefGeneratingLocal
+
+      React.useEffect(function () {
+        if (!briefGeneratingLocal) return undefined
+        const timer = setTimeout(function () { setBriefGeneratingLocal(false) }, 90000)
+        return function () { clearTimeout(timer) }
+      }, [briefGeneratingLocal])
+
+      function saveBrief(patch) {
+        setBriefFieldError(null)
+        return save({ morningBrief: patch })
+      }
+
+      function toggleBriefEnabled() {
+        if (saving) return
+        void saveBrief({ enabled: briefSettings.enabled !== true })
+      }
+
+      function handleBriefTimeChange(raw) {
+        const value = sanitizeTimeInput(raw)
+        setDraftBriefTime(value)
+        if (briefFieldError !== null && isValidReportTime(value)) setBriefFieldError(null)
+      }
+
+      function commitBriefTime(raw) {
+        const value = sanitizeTimeInput(String(raw || '').trim())
+        setDraftBriefTime(value)
+        if (!isValidReportTime(value)) {
+          // Invalid 24-hour value: inline field error, never submit.
+          setBriefFieldError(t('briefTimeInvalid'))
+          return
+        }
+        setBriefFieldError(null)
+        if (value === briefSettings.time) return
+        void saveBrief({ time: value })
+      }
+
+      function commitBriefDir(raw) {
+        const value = String(raw || '').trim()
+        setDraftBriefDir(value)
+        if (value === briefSettings.dir) return
+        void saveBrief({ dir: value })
+      }
+
+      function pickBriefDirectory() {
+        if (pickingBriefDir || saving) return
+        const service = ctx && ctx.uiWorkspace ? ctx.uiWorkspace : null
+        if (!service || typeof service.pickDirectory !== 'function') {
+          store.reportError(t('pickFailed'))
+          return
+        }
+        setPickingBriefDir(true)
+        let attempt = null
+        try { attempt = service.pickDirectory() } catch (error) { attempt = Promise.reject(error) }
+        Promise.resolve(attempt).then(function (picked) {
+          setPickingBriefDir(false)
+          if (typeof picked === 'string' && picked.trim() !== '') {
+            setDraftBriefDir(picked)
+            void saveBrief({ dir: picked })
+          }
+        }, function (error) {
+          setPickingBriefDir(false)
+          store.reportError(t('pickFailed') + ' — ' + (error && error.message ? error.message : t('unknownError')))
+        })
+      }
+
+      function generateBriefNow() {
+        if (briefBusy) return
+        setBriefGeneratingLocal(true)
+        store.generateBrief(todayKey()).then(function (result) {
+          if (!result.ok) {
+            setBriefGeneratingLocal(false)
+            return
+          }
+          if (typeof props.addToast === 'function') props.addToast(t('briefGenerating'), 'info')
+          void store.refreshBriefs()
+        })
       }
 
       // ---- v9: self-evolution settings (write straight through to saveSettings)
@@ -5143,6 +5890,101 @@ window.__ModuleLoader__.load({
           ? h('div', { className: 'dsh-ps-field-error' }, t('reportError') + ' — ' + reportSettings.lastError)
           : null)
 
+      // ---- v0.6: morning brief section (between the daily report and the
+      // retrospective section, per the v0.6 contract §4.4)
+      const briefStatusToneValue = briefStatusTone(briefSettings)
+      let briefMetaText = t('briefStatusIdle')
+      if (briefSettings.lastDate) briefMetaText = briefSettings.lastDate
+      if (briefSettings.lastGeneratedAt > 0) {
+        briefMetaText = briefMetaText + (briefSettings.lastDate ? ' · ' : '') + formatTime(briefSettings.lastGeneratedAt)
+      }
+      const briefEnableRow = h('div', { key: 'brief-enable', className: 'dsh-ps-settings-row' },
+        h(Switch, {
+          checked: briefSettings.enabled === true,
+          disabled: saving,
+          label: t('briefEnable'),
+          onChange: toggleBriefEnabled,
+        }),
+        h('div', { className: 'dsh-ps-settings-row-text' },
+          h('span', { className: 'dsh-ps-settings-row-label' }, t('briefEnable')),
+          h('p', { className: 'dsh-ps-settings-row-hint' }, t('briefEnableHint'))))
+
+      const briefTimeField = h(Field, { key: 'brief-time', label: t('briefTime'), htmlFor: 'dsh-ps-settings-brief-time', hint: t('briefTimeHint'), error: briefFieldError },
+        h('input', {
+          id: 'dsh-ps-settings-brief-time',
+          className: 'dsh-ps-input dsh-ps-time-input',
+          type: 'text',
+          inputMode: 'numeric',
+          autoComplete: 'off',
+          maxLength: 5,
+          placeholder: '08:30',
+          value: draftBriefTime,
+          disabled: saving,
+          'aria-invalid': briefFieldError ? 'true' : 'false',
+          spellCheck: false,
+          onChange: function (event) { handleBriefTimeChange(event.target.value) },
+          onBlur: function (event) { commitBriefTime(event.currentTarget.value) },
+          onKeyDown: function (event) {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              commitBriefTime(event.currentTarget.value)
+            }
+          },
+        }))
+
+      const briefDirField = h(Field, { key: 'brief-dir', label: t('briefDir'), htmlFor: 'dsh-ps-settings-brief-dir', hint: t('briefDirHint') },
+        h('div', { className: 'dsh-ps-dir-row' },
+          h('input', {
+            id: 'dsh-ps-settings-brief-dir',
+            className: 'dsh-ps-input',
+            type: 'text',
+            value: draftBriefDir,
+            placeholder: t('fieldCwdPlaceholder'),
+            spellCheck: false,
+            disabled: saving,
+            onChange: function (event) { setDraftBriefDir(event.target.value) },
+            onBlur: function (event) { commitBriefDir(event.target.value) },
+            onKeyDown: function (event) {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                commitBriefDir(event.currentTarget.value)
+              }
+            },
+          }),
+          h('button', {
+            type: 'button',
+            className: 'dsh-ps-btn',
+            disabled: saving || pickingBriefDir,
+            'aria-label': t('chooseDirectory'),
+            title: t('chooseDirectory'),
+            onClick: pickBriefDirectory,
+          }, pickingBriefDir ? h(Spinner) : h(IconFolder, { size: 15 }))))
+
+      const briefStatusRow = h('div', { key: 'brief-status', className: 'dsh-ps-settings-status dsh-ps-settings-span-2' },
+        h('span', { className: 'dsh-ps-field-label' }, t('briefLast')),
+        h('div', { className: 'dsh-ps-settings-status-line' },
+          h('span', { className: 'dsh-ps-report-status-chip', 'data-tone': briefStatusToneValue },
+            briefBusy ? h(Spinner) : null,
+            h('span', null, briefBusy ? t('briefGenerating') : briefStatusText(t, briefSettings))),
+          h('span', { className: 'dsh-ps-settings-status-date' }, briefMetaText),
+          h('span', { className: 'dsh-ps-settings-status-grow' }),
+          h('button', {
+            type: 'button',
+            className: 'dsh-ps-btn dsh-ps-btn-sm',
+            disabled: saving || briefBusy,
+            onClick: generateBriefNow,
+          }, briefBusy ? h(Spinner) : h(IconPlay, { size: 12 }), h('span', null, briefBusy ? t('briefStatusRunning') : t('briefGenerateNow')))),
+        briefSettings.lastError
+          ? h('div', { className: 'dsh-ps-field-error' }, t('briefErrorLabel') + ' — ' + briefSettings.lastError)
+          : null)
+
+      const briefSection = section('brief', IconCalendar, t('briefSettingsTitle'), t('briefSettingsSub'), [
+        briefEnableRow,
+        briefTimeField,
+        h('div', { key: 'brief-dir-wrap', className: 'dsh-ps-settings-span-2' }, briefDirField),
+        briefStatusRow,
+      ])
+
       // ---- v9: self-evolution section (after the daily report section)
       const evolutionBusy = evolutionGenerating
       let evolutionStatusLabel = t('evolutionStatusIdle')
@@ -5556,6 +6398,7 @@ window.__ModuleLoader__.load({
             h('div', { key: 'report-dir-wrap', className: 'dsh-ps-settings-span-2' }, reportDirField),
             reportStatusRow,
           ]),
+          briefSection,
           evolutionSection,
           backupSection),
         h('div', { className: 'dsh-ps-dialog-foot' },
@@ -6136,6 +6979,7 @@ window.__ModuleLoader__.load({
       const dialogRef = React.useRef(null)
       const bodyRef = React.useRef(null)
       const closeBtnRef = React.useRef(null)
+      const composerRef = React.useRef(null)
       const pinnedRef = React.useRef(false)
       const reloadRef = React.useRef(null)
       const transcriptFailureRef = React.useRef(false)
@@ -6146,6 +6990,15 @@ window.__ModuleLoader__.load({
         error: null,
       })
       const [draft, setDraft] = React.useState('')
+      React.useEffect(function () {
+        if (props.focusComposer !== true) return undefined
+        const timer = setTimeout(function () {
+          const node = composerRef.current
+          if (!node || typeof node.focus !== 'function') return
+          try { node.focus() } catch (error) { /* focus is progressive enhancement */ }
+        }, 80)
+        return function () { clearTimeout(timer) }
+      }, [props.focusComposer])
       const [sending, setSending] = React.useState(false)
       const [chatError, setChatError] = React.useState(null)
       const [busy, setBusy] = React.useState(null)
@@ -6611,6 +7464,7 @@ window.__ModuleLoader__.load({
             h('div', { className: 'dsh-ps-composer-row' },
               h('textarea', {
                 className: 'dsh-ps-textarea',
+                ref: composerRef,
                 value: draft,
                 rows: 2,
                 placeholder: t('chatPlaceholder'),
@@ -6626,6 +7480,953 @@ window.__ModuleLoader__.load({
                 onClick: send,
               }, sending ? h(Spinner) : h(IconSend, { size: 15 }),
               h('span', null, sending ? t('sending') : t('send')))))))
+    }
+
+
+    // ------------------------------------------------------------------ today workbench (v0.6)
+
+    function formatClock(value) {
+      if (typeof value !== 'number' || !isFinite(value) || value <= 0) return '—'
+      const date = new Date(value)
+      if (isNaN(date.getTime())) return '—'
+      return pad2(date.getHours()) + ':' + pad2(date.getMinutes())
+    }
+
+    function usageTokensOf(task) {
+      if (!task || typeof task !== 'object') return 0
+      const usage = task.result && task.result.usage
+      if (!usage || typeof usage !== 'object') return 0
+      let total = 0
+      if (typeof usage.inputTokens === 'number' && isFinite(usage.inputTokens)) total += Math.max(0, usage.inputTokens)
+      if (typeof usage.outputTokens === 'number' && isFinite(usage.outputTokens)) total += Math.max(0, usage.outputTokens)
+      if (total === 0 && typeof usage.totalTokens === 'number' && isFinite(usage.totalTokens)) total = Math.max(0, usage.totalTokens)
+      return total
+    }
+
+    function taskEventAt(task) {
+      if (!task || typeof task !== 'object') return 0
+      if (typeof task.updatedAt === 'number' && isFinite(task.updatedAt) && task.updatedAt > 0) return task.updatedAt
+      if (typeof task.createdAt === 'number' && isFinite(task.createdAt) && task.createdAt > 0) return task.createdAt
+      return 0
+    }
+
+    var WAITING_STATUS_ORDER = { blocked: 0, failed: 1, paused: 2 }
+
+    function waitingTasksOf(tasks) {
+      const list = []
+      if (Array.isArray(tasks)) {
+        for (let i = 0; i < tasks.length; i += 1) {
+          const task = tasks[i]
+          if (task.status === 'blocked' || task.status === 'paused' || task.status === 'failed') list.push(task)
+        }
+      }
+      list.sort(function (left, right) {
+        const delta = (WAITING_STATUS_ORDER[left.status] || 9) - (WAITING_STATUS_ORDER[right.status] || 9)
+        if (delta !== 0) return delta
+        return taskEventAt(left) - taskEventAt(right)
+      })
+      return list
+    }
+
+    function recentEventsOf(tasks, now) {
+      const cutoff = (typeof now === 'number' ? now : Date.now()) - NOTIF_RECENT_WINDOW_MS
+      const list = []
+      if (!Array.isArray(tasks)) return list
+      for (let i = 0; i < tasks.length; i += 1) {
+        const task = tasks[i]
+        if (task.status !== 'done' && task.status !== 'failed' && task.status !== 'blocked') continue
+        const at = taskEventAt(task)
+        if (at > 0 && at >= cutoff) list.push(task)
+      }
+      list.sort(function (left, right) { return taskEventAt(right) - taskEventAt(left) })
+      return list
+    }
+
+    function buildFocusPool(tasks) {
+      const pending = []
+      const ideas = []
+      if (Array.isArray(tasks)) {
+        for (let i = 0; i < tasks.length; i += 1) {
+          const task = tasks[i]
+          if (task.status === 'pending') pending.push(task)
+          else if (task.status === 'idea') ideas.push(task)
+        }
+      }
+      ideas.sort(function (left, right) {
+        const leftAt = typeof left.createdAt === 'number' ? left.createdAt : 0
+        const rightAt = typeof right.createdAt === 'number' ? right.createdAt : 0
+        return rightAt - leftAt
+      })
+      const pool = []
+      for (let i = 0; i < pending.length; i += 1) pool.push({ task: pending[i], kind: 'pending' })
+      for (let i = 0; i < ideas.length; i += 1) pool.push({ task: ideas[i], kind: 'idea' })
+      return pool
+    }
+
+    function focusReasonOf(item, titleById, t) {
+      const task = item.task
+      if (task.chainFrom !== '' && titleById.get(task.chainFrom)) {
+        return t('focusReasonChain', { title: titleById.get(task.chainFrom) })
+      }
+      const priority = normalizePriority(task.priority)
+      if (priority === 'urgent' || priority === 'high') return t('focusReasonPriority')
+      if (item.kind === 'pending') return t('focusReasonPending')
+      return t('focusReasonIdea')
+    }
+
+    function TodayView(props) {
+      const t = props.t
+      const store = props.store
+      const snap = props.snap
+      const now = props.now
+      const tasks = Array.isArray(snap.tasks) ? snap.tasks : []
+      const settings = snap.settings
+      const today = todayKey()
+      const date = new Date(now)
+      const [capture, setCapture] = React.useState('')
+      const [capturing, setCapturing] = React.useState(false)
+      const [focusRotation, setFocusRotation] = React.useState(0)
+      const [briefSnippet, setBriefSnippet] = React.useState('')
+
+      const briefsState = snap.briefs || { phase: 'idle', items: [], settings: null, error: null, supported: true }
+      const briefSettings = briefsState.settings || (settings && settings.morningBrief) || defaultMorningBriefSettings()
+      const briefsSupported = briefsState.supported !== false
+      let todayBrief = null
+      for (let i = 0; i < briefsState.items.length; i += 1) {
+        if (briefsState.items[i].date === today) { todayBrief = briefsState.items[i]; break }
+      }
+      const briefGenerating = briefSettings.lastStatus === 'running' || Boolean(briefSettings.generatingDate)
+
+      let briefState = 'none'
+      if (!briefsSupported) briefState = 'unsupported'
+      else if (briefGenerating) briefState = 'generating'
+      else if (briefSettings.enabled === false) briefState = 'off'
+      else if (todayBrief) briefState = 'ready'
+
+      const briefSig = todayBrief ? todayBrief.date + ':' + String(todayBrief.updatedAt) : ''
+      React.useEffect(function () {
+        if (!todayBrief) {
+          setBriefSnippet('')
+          return undefined
+        }
+        let alive = true
+        store.loadBriefContent(today).then(function (result) {
+          if (!alive) return
+          if (result.ok && result.data && typeof result.data.content === 'string') {
+            setBriefSnippet(briefSnippetFromMarkdown(result.data.content))
+          } else {
+            setBriefSnippet('')
+          }
+        })
+        return function () { alive = false }
+      }, [briefSig, today, store])
+
+      const titleById = new Map()
+      for (let i = 0; i < tasks.length; i += 1) titleById.set(tasks[i].id, tasks[i].title)
+
+      const waiting = waitingTasksOf(tasks)
+      const proposed = snap.evolution ? snap.evolution.proposedSkillCount : 0
+      const waitingCount = waiting.length + (proposed > 0 ? 1 : 0)
+
+      const focusPool = buildFocusPool(tasks)
+      const focusVisible = []
+      if (focusPool.length > 0) {
+        const start = ((focusRotation * FOCUS_ROTATE) % focusPool.length + focusPool.length) % focusPool.length
+        for (let i = 0; i < focusPool.length && focusVisible.length < FOCUS_SIZE; i += 1) {
+          focusVisible.push(focusPool[(start + i) % focusPool.length])
+        }
+      }
+
+      const running = []
+      for (let i = 0; i < tasks.length; i += 1) {
+        if (tasks[i].status === 'running') running.push(tasks[i])
+      }
+
+      const doneToday = []
+      for (let i = 0; i < tasks.length; i += 1) {
+        const task = tasks[i]
+        if (task.status !== 'done') continue
+        const stamp = task.endedAt || task.updatedAt
+        if (isSameLocalDay(stamp, now)) doneToday.push(task)
+      }
+      doneToday.sort(function (left, right) { return (right.endedAt || 0) - (left.endedAt || 0) })
+      const doneVisible = doneToday.slice(0, TODAY_DONE_MAX)
+      let tokensToday = 0
+      for (let i = 0; i < doneToday.length; i += 1) tokensToday += usageTokensOf(doneToday[i])
+      let weekDone = 0
+      const weekCutoff = now - 7 * 24 * 60 * 60 * 1000
+      for (let i = 0; i < tasks.length; i += 1) {
+        if (tasks[i].status !== 'done') continue
+        const stamp = tasks[i].endedAt || tasks[i].updatedAt
+        if (typeof stamp === 'number' && stamp >= weekCutoff) weekDone += 1
+      }
+
+      function submitCapture() {
+        const text = capture.trim()
+        if (text === '' || capturing) return
+        setCapturing(true)
+        Promise.resolve(props.onCapture(text)).then(function (result) {
+          setCapturing(false)
+          if (result && result.ok) setCapture('')
+        }, function () {
+          setCapturing(false)
+        })
+      }
+
+      function onCaptureKeyDown(event) {
+        if (event.key !== 'Enter') return
+        if (event.nativeEvent && event.nativeEvent.isComposing) return
+        event.preventDefault()
+        submitCapture()
+      }
+
+      function openTaskRow(task, event) {
+        const target = event && event.target
+        if (target && typeof target.closest === 'function' && target.closest('button')) return
+        props.onOpenTask(task.id)
+      }
+
+      function stopAnd(task, action, event) {
+        if (event) event.stopPropagation()
+        props.onAction(task, action)
+      }
+
+      function stopAndOpen(task, event) {
+        if (event) event.stopPropagation()
+        props.onOpenTaskChat(task)
+      }
+
+      function actionButton(label, onClick, tone) {
+        const className = 'dsh-ps-btn dsh-ps-btn-sm' + (tone === 'primary' ? ' dsh-ps-btn-primary' : (tone === 'ghost' ? ' dsh-ps-btn-ghost' : ''))
+        return h('button', { type: 'button', className: className, onClick: onClick }, h('span', null, label))
+      }
+
+      function waitingRow(task) {
+        let hint = ''
+        if (task.status === 'blocked') {
+          hint = t('waitBlocked') + ' · ' + t('waitBlockedHint', { duration: formatDuration(Math.max(0, now - (task.updatedAt || now))) })
+        } else if (task.status === 'paused') {
+          hint = t('waitPaused') + ' · ' + t('waitPausedHint')
+        } else {
+          hint = t('waitFailed') + ' · ' + t('waitFailedHint', { time: formatRelativeTime(t, task.updatedAt || task.createdAt, now) })
+        }
+        const actions = []
+        if (task.status === 'blocked') {
+          actions.push(actionButton(t('openSession'), function (event) { stopAndOpen(task, event) }, 'primary'))
+          actions.push(actionButton(t('pause'), function (event) { stopAnd(task, 'pause', event) }))
+        } else if (task.status === 'paused') {
+          actions.push(actionButton(t('resume'), function (event) { stopAnd(task, 'resume', event) }, 'primary'))
+          actions.push(actionButton(t('openSession'), function (event) { stopAndOpen(task, event) }))
+        } else {
+          actions.push(actionButton(t('retry'), function (event) { stopAnd(task, 'retry', event) }, 'primary'))
+          actions.push(actionButton(t('openSession'), function (event) { stopAndOpen(task, event) }))
+        }
+        return h('li', {
+          key: task.id,
+          className: 'dsh-ps-today-row',
+          'data-kind': task.status,
+          'data-clickable': 'true',
+          onClick: function (event) { openTaskRow(task, event) },
+        },
+        h(StatusDot, { status: task.status }),
+        h('div', { className: 'dsh-ps-today-main-col' },
+          h('span', { className: 'dsh-ps-today-title', title: task.title }, task.title),
+          h('span', { className: 'dsh-ps-today-hint', title: hint }, hint)),
+        h('div', { className: 'dsh-ps-today-actions' }, actions))
+      }
+
+      const waitingNodes = []
+      for (let i = 0; i < waiting.length; i += 1) waitingNodes.push(waitingRow(waiting[i]))
+      if (proposed > 0) {
+        waitingNodes.push(h('li', {
+          key: 'skill-candidates',
+          className: 'dsh-ps-today-row',
+          'data-kind': 'skills',
+        },
+        h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconSpark, { size: 15 })),
+        h('div', { className: 'dsh-ps-today-main-col' },
+          h('span', { className: 'dsh-ps-today-title' }, t('waitSkillCandidates', { count: proposed })),
+          h('span', { className: 'dsh-ps-today-hint', title: t('waitSkillHint') }, t('waitSkillHint'))),
+        h('div', { className: 'dsh-ps-today-actions' },
+          actionButton(t('waitViewCandidates'), function (event) {
+            if (event) event.stopPropagation()
+            props.onOpenEvolution('skills')
+          }, 'primary'))))
+      }
+      const waitingSection = h('section', { className: 'dsh-ps-today-section', 'aria-label': t('needsYou') },
+        h('div', { className: 'dsh-ps-today-sec-head' },
+          h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconBell, { size: 15 })),
+          h('h3', { className: 'dsh-ps-today-sec-title' }, t('needsYou')),
+          waitingCount > 0 ? h('span', { className: 'dsh-ps-today-sec-count' }, String(waitingCount)) : null),
+        waitingNodes.length > 0
+          ? h('ul', { className: 'dsh-ps-today-list' }, waitingNodes)
+          : h('p', { className: 'dsh-ps-today-empty' }, t('needsYouEmpty')))
+
+      const focusNodes = []
+      for (let i = 0; i < focusVisible.length; i += 1) {
+        const item = focusVisible[i]
+        const task = item.task
+        const reason = focusReasonOf(item, titleById, t)
+        const primaryLabel = item.kind === 'pending' ? t('focusRunNow') : t('promote')
+        const primaryAction = item.kind === 'pending' ? 'run' : 'promote'
+        focusNodes.push(h('li', {
+          key: task.id,
+          className: 'dsh-ps-today-row',
+          'data-clickable': 'true',
+          onClick: function (event) { openTaskRow(task, event) },
+        },
+        h('span', { className: 'dsh-ps-today-sec-count' }, String(i + 1)),
+        h('div', { className: 'dsh-ps-today-main-col' },
+          h('span', { className: 'dsh-ps-today-title', title: task.title }, task.title),
+          h('span', { className: 'dsh-ps-today-hint', title: reason }, reason)),
+        h('div', { className: 'dsh-ps-today-actions' },
+          actionButton(primaryLabel, function (event) { stopAnd(task, primaryAction, event) }, 'primary'),
+          actionButton(t('edit'), function (event) {
+            if (event) event.stopPropagation()
+            props.onEdit(task)
+          }, 'ghost'))))
+      }
+      const focusSection = h('section', { className: 'dsh-ps-today-section', 'aria-label': t('todayFocus') },
+        h('div', { className: 'dsh-ps-today-sec-head' },
+          h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconSpark, { size: 15 })),
+          h('h3', { className: 'dsh-ps-today-sec-title' }, t('todayFocus')),
+          h('span', { className: 'dsh-ps-today-sec-grow' }),
+          focusPool.length > FOCUS_SIZE
+            ? h('button', {
+              type: 'button',
+              className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-ghost',
+              onClick: function () { setFocusRotation(function (value) { return value + 1 }) },
+            }, h(IconRefresh, { size: 13 }), h('span', null, t('focusShuffle')))
+            : null),
+        focusNodes.length > 0
+          ? h('ul', { className: 'dsh-ps-today-list' }, focusNodes)
+          : h('p', { className: 'dsh-ps-today-empty' }, t('focusEmpty')))
+
+      const runningNodes = []
+      for (let i = 0; i < running.length; i += 1) {
+        const task = running[i]
+        const model = taskModelLabel(task)
+        const hint = t('runningFor', { duration: formatDuration(taskDurationMs(task, now)) }) + (model !== '' ? ' · ' + model : '')
+        runningNodes.push(h('li', {
+          key: task.id,
+          className: 'dsh-ps-today-row',
+          'data-kind': 'running',
+          'data-clickable': 'true',
+          onClick: function (event) { openTaskRow(task, event) },
+        },
+        h(StatusDot, { status: 'running' }),
+        h('div', { className: 'dsh-ps-today-main-col' },
+          h('span', { className: 'dsh-ps-today-title', title: task.title }, task.title),
+          h('span', { className: 'dsh-ps-today-hint', title: hint }, hint)),
+        h('div', { className: 'dsh-ps-today-actions' },
+          actionButton(t('openSession'), function (event) {
+            if (event) event.stopPropagation()
+            props.onOpenSession(task)
+          }, 'primary'),
+          actionButton(t('pause'), function (event) { stopAnd(task, 'pause', event) }))))
+      }
+      const runningSection = h('section', { className: 'dsh-ps-today-section', 'aria-label': t('todayRunning') },
+        h('div', { className: 'dsh-ps-today-sec-head' },
+          h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconPlay, { size: 15 })),
+          h('h3', { className: 'dsh-ps-today-sec-title' }, t('todayRunning')),
+          running.length > 0 ? h('span', { className: 'dsh-ps-today-sec-count' }, String(running.length)) : null),
+        runningNodes.length > 0
+          ? h('ul', { className: 'dsh-ps-today-list' }, runningNodes)
+          : h('p', { className: 'dsh-ps-today-empty' }, t('runningEmpty')))
+
+      const doneNodes = []
+      for (let i = 0; i < doneVisible.length; i += 1) {
+        const task = doneVisible[i]
+        const stamp = task.endedAt || task.updatedAt
+        const resultLine = taskResultOneLine(task, 80)
+        const duration = taskDurationMs(task, now)
+        doneNodes.push(h('li', {
+          key: task.id,
+          className: 'dsh-ps-today-row',
+          'data-clickable': 'true',
+          onClick: function (event) { openTaskRow(task, event) },
+        },
+        h('span', { className: 'dsh-ps-today-time' }, formatClock(stamp)),
+        h('div', { className: 'dsh-ps-today-done-body' },
+          h('span', { className: 'dsh-ps-today-title', title: task.title }, task.title),
+          h('span', { className: 'dsh-ps-today-result', title: resultLine || t('doneNoResult') }, resultLine || t('doneNoResult'))),
+        h('div', { className: 'dsh-ps-today-actions' },
+          duration > 0 ? h('span', { className: 'dsh-ps-today-hint' }, formatDuration(duration)) : null,
+          actionButton(t('view'), function (event) {
+            if (event) event.stopPropagation()
+            props.onOpenTask(task.id)
+          }, 'ghost'))))
+      }
+      const doneFoot = doneToday.length > 0
+        ? h('div', { className: 'dsh-ps-today-foot' },
+          h('button', {
+            type: 'button',
+            className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-ghost',
+            onClick: function () { props.onGoTasks() },
+          }, h('span', null, t('doneTotal', { count: doneToday.length })), h(IconArrowRight, { size: 13 })))
+        : null
+      const doneSection = h('section', { className: 'dsh-ps-today-section', 'aria-label': t('todayDone') },
+        h('div', { className: 'dsh-ps-today-sec-head' },
+          h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconCheckCircle, { size: 15 })),
+          h('h3', { className: 'dsh-ps-today-sec-title' }, t('todayDone')),
+          doneToday.length > 0 ? h('span', { className: 'dsh-ps-today-sec-count' }, String(doneToday.length)) : null),
+        doneNodes.length > 0
+          ? h('ul', { className: 'dsh-ps-today-list' }, doneNodes)
+          : h('p', { className: 'dsh-ps-today-empty' }, t('doneEmpty')),
+        doneFoot)
+
+      const briefActions = []
+      if (briefState === 'ready') {
+        briefActions.push(actionButton(t('briefView'), function () { props.onOpenBriefs() }, 'primary'))
+      } else if (briefState === 'generating') {
+        briefActions.push(h('button', { type: 'button', className: 'dsh-ps-btn dsh-ps-btn-sm', disabled: true },
+          h(Spinner), h('span', null, t('briefGenerating'))))
+      } else if (briefState === 'off') {
+        briefActions.push(actionButton(t('briefGoSettings'), function () { props.onGoSettings() }))
+      } else if (briefState === 'none') {
+        briefActions.push(h('button', {
+          type: 'button',
+          className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-primary',
+          disabled: briefGenerating,
+          onClick: function () { props.onGenerateBrief(today) },
+        }, h(IconPlay, { size: 13 }), h('span', null, t('briefGenerate'))))
+      }
+      let briefMeta = ''
+      if (briefState === 'unsupported') briefMeta = t('briefUnsupported')
+      else if (briefState === 'generating') briefMeta = t('briefGenerating')
+      else if (briefState === 'off') briefMeta = t('briefOff')
+      else if (briefState === 'ready') briefMeta = t('briefReady') + (todayBrief && todayBrief.updatedAt > 0 ? ' · ' + formatTime(todayBrief.updatedAt) : '')
+      else briefMeta = t('briefNoToday') + ' · ' + t('briefNextAt', { time: briefSettings.time })
+      const briefSection = h('section', { className: 'dsh-ps-today-section dsh-ps-brief-card', 'data-state': briefState, 'aria-label': t('briefCardTitle') },
+        h('div', { className: 'dsh-ps-today-sec-head' },
+          h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconFileText, { size: 15 })),
+          h('h3', { className: 'dsh-ps-today-sec-title' }, t('briefCardTitle')),
+          h('span', { className: 'dsh-ps-today-sec-grow' }),
+          todayBrief ? h('span', { className: 'dsh-ps-today-sec-count' }, today) : null),
+        h('p', { className: 'dsh-ps-brief-snippet' }, briefState === 'ready' ? (briefSnippet || t('briefReady')) : briefMeta),
+        briefActions.length > 0 ? h('div', { className: 'dsh-ps-brief-actions' }, briefActions) : null)
+
+      const greeting = h('div', { className: 'dsh-ps-greet' },
+        h('div', { className: 'dsh-ps-greet-main' },
+          h('span', { className: 'dsh-ps-greet-date' },
+            h(IconCalendar, { size: 13 }),
+            h('span', null, (date.getMonth() + 1) + '月' + date.getDate() + '日 · ' + t(WEEKDAY_KEYS[date.getDay()]))),
+          h('p', { className: 'dsh-ps-greet-line' }, t('greetingMorning'))),
+        h('div', { className: 'dsh-ps-watch' },
+          h('span', { className: 'dsh-ps-watch-label' }, h(StatusDot, { status: running.length > 0 ? 'running' : 'pending' }), t('onWatch')),
+          h('div', { className: 'dsh-ps-watch-metrics' },
+            h('span', null, t('todayProcessed', { count: doneToday.length })),
+            h('span', null, t('todayNeedYouCount', { count: waitingCount })))))
+
+      const captureNode = h('div', { className: 'dsh-ps-capture' },
+        h('span', { className: 'dsh-ps-capture-icon', 'aria-hidden': 'true' }, h(IconPlus, { size: 16 })),
+        h('input', {
+          className: 'dsh-ps-capture-input',
+          type: 'text',
+          value: capture,
+          placeholder: t('capturePlaceholder'),
+          'aria-label': t('capturePlaceholder'),
+          maxLength: MAX_TITLE_LENGTH,
+          spellCheck: false,
+          disabled: capturing,
+          onChange: function (event) { setCapture(event.target.value) },
+          onKeyDown: onCaptureKeyDown,
+        }),
+        h('button', {
+          type: 'button',
+          className: 'dsh-ps-capture-submit',
+          disabled: capturing || capture.trim() === '',
+          onClick: submitCapture,
+        }, capturing ? h(Spinner) : h(IconPlus, { size: 14 }), h('span', null, capturing ? t('captureSaving') : t('captureSubmit'))))
+
+      const webhook = settings && settings.webhook ? settings.webhook : null
+      let webhookLine = t('webhookLastLineIdle')
+      if (webhook && webhook.lastAt) {
+        webhookLine = t('webhookLastLine', {
+          status: webhook.lastStatus === 'ok' ? t('webhookStatusOk') : t('webhookStatusFailed'),
+          time: formatRelativeTime(t, webhook.lastAt, now),
+          event: webhookEventLabel(t, webhook.lastEvent || ''),
+        })
+      }
+      const ledgerCard = h('section', { className: 'dsh-ps-today-section dsh-ps-side-card', 'aria-label': t('todayLedger') },
+        h('div', { className: 'dsh-ps-today-sec-head' },
+          h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconLayers, { size: 15 })),
+          h('h3', { className: 'dsh-ps-today-sec-title' }, t('todayLedger'))),
+        h('div', { className: 'dsh-ps-ledger-grid' },
+          h('div', { className: 'dsh-ps-ledger-cell' },
+            h('span', { className: 'dsh-ps-ledger-value' }, String(doneToday.length)),
+            h('span', { className: 'dsh-ps-ledger-label' }, t('ledgerDone'))),
+          h('div', { className: 'dsh-ps-ledger-cell' },
+            h('span', { className: 'dsh-ps-ledger-value' }, String(running.length)),
+            h('span', { className: 'dsh-ps-ledger-label' }, t('ledgerRunning'))),
+          h('div', { className: 'dsh-ps-ledger-cell' },
+            h('span', { className: 'dsh-ps-ledger-value' }, String(waitingCount)),
+            h('span', { className: 'dsh-ps-ledger-label' }, t('ledgerWaiting'))),
+          h('div', { className: 'dsh-ps-ledger-cell' },
+            h('span', { className: 'dsh-ps-ledger-value' }, tokensToday > 0 ? formatTokens(tokensToday) : '—'),
+            h('span', { className: 'dsh-ps-ledger-label' }, t('ledgerTokens')))),
+        weekDone > 0 ? h('p', { className: 'dsh-ps-side-hint' }, t('ledgerWeek', { count: weekDone })) : null)
+
+      const shortcutsCard = h('section', { className: 'dsh-ps-today-section dsh-ps-side-card', 'aria-label': t('shortcuts') },
+        h('div', { className: 'dsh-ps-today-sec-head' },
+          h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconArrowRight, { size: 15 })),
+          h('h3', { className: 'dsh-ps-today-sec-title' }, t('shortcuts'))),
+        h('div', { className: 'dsh-ps-shortcuts' },
+          h('button', { type: 'button', className: 'dsh-ps-shortcut', onClick: function () { props.onGoTasks() } },
+            h(IconInbox, { size: 15 }), h('span', null, t('shortcutBoard'))),
+          h('button', { type: 'button', className: 'dsh-ps-shortcut', onClick: function () { props.onOpenReports() } },
+            h(IconFileText, { size: 15 }), h('span', null, t('shortcutReports'))),
+          h('button', { type: 'button', className: 'dsh-ps-shortcut', onClick: function () { props.onOpenEvolution('retrospective') } },
+            h(IconSpark, { size: 15 }), h('span', null, t('shortcutEvolution'))),
+          h('button', { type: 'button', className: 'dsh-ps-shortcut', onClick: function () { props.onOpenEvolution('lessons') } },
+            h(IconLayers, { size: 15 }), h('span', null, t('shortcutLessons')))))
+
+      const webhookCard = h('section', { className: 'dsh-ps-today-section dsh-ps-side-card', 'aria-label': t('webhookCardTitle') },
+        h('div', { className: 'dsh-ps-today-sec-head' },
+          h('span', { className: 'dsh-ps-today-sec-icon', 'aria-hidden': 'true' }, h(IconSend, { size: 15 })),
+          h('h3', { className: 'dsh-ps-today-sec-title' }, t('webhookCardTitle')),
+          h('span', { className: 'dsh-ps-today-sec-grow' }),
+          h('span', { className: 'dsh-ps-report-status-chip', 'data-tone': webhook && webhook.enabled ? 'ok' : 'idle' },
+            webhook && webhook.enabled ? t('webhookEnabled') : t('webhookDisabled'))),
+        h('div', { className: 'dsh-ps-webhook-line' }, h('span', null, webhookLine)),
+        h('button', {
+          type: 'button',
+          className: 'dsh-ps-btn dsh-ps-btn-sm',
+          onClick: function () { props.onOpenWebhookLog() },
+        }, h(IconFileText, { size: 13 }), h('span', null, t('webhookLog'))))
+
+      return h('div', { className: 'dsh-ps-today-shell' },
+        greeting,
+        captureNode,
+        h('div', { className: 'dsh-ps-today' },
+          h('div', { className: 'dsh-ps-today-main' }, briefSection, waitingSection, focusSection, runningSection, doneSection),
+          h('div', { className: 'dsh-ps-today-side' }, ledgerCard, shortcutsCard, webhookCard)))
+    }
+
+    function BriefsDrawer(props) {
+      const t = props.t
+      const store = props.store
+      const snap = useStoreSnapshot(store)
+      const state = snap.briefs || { phase: 'idle', items: [], settings: null, error: null, supported: true }
+      const settings = state.settings || (snap.settings ? snap.settings.morningBrief : null) || defaultMorningBriefSettings()
+      const generating = settings.lastStatus === 'running' || Boolean(settings.generatingDate)
+      const supported = state.supported !== false
+      const today = todayKey()
+      const items = state.items
+      const dialogRef = React.useRef(null)
+      const closeBtnRef = React.useRef(null)
+      const [selectedDate, setSelectedDate] = React.useState(null)
+      const [content, setContent] = React.useState({ phase: 'idle', text: '', error: null, date: null })
+      const [contentTick, setContentTick] = React.useState(0)
+      const [inlineError, setInlineError] = React.useState(null)
+      const [localPending, setLocalPending] = React.useState(null)
+      const prevGeneratingRef = React.useRef(null)
+
+      useDialogA11y(dialogRef, props.onClose, true, closeBtnRef)
+
+      React.useEffect(function () {
+        if (!supported) return
+        void store.refreshBriefs()
+      }, [store, supported])
+
+      React.useEffect(function () {
+        if (items.length === 0) {
+          if (selectedDate !== null) setSelectedDate(null)
+          return
+        }
+        const present = selectedDate !== null && items.some(function (item) { return item.date === selectedDate })
+        if (!present) setSelectedDate(items[0].date)
+      }, [items, selectedDate])
+
+      React.useEffect(function () {
+        if (selectedDate === null) {
+          setContent({ phase: 'ready', text: '', error: null, date: null })
+          return undefined
+        }
+        let alive = true
+        setContent({ phase: 'loading', text: '', error: null, date: selectedDate })
+        store.loadBriefContent(selectedDate).then(function (result) {
+          if (!alive) return
+          if (result.ok && result.data && typeof result.data.content === 'string') {
+            setContent({ phase: 'ready', text: result.data.content, error: null, date: selectedDate })
+          } else {
+            setContent({ phase: 'error', text: '', error: (result && result.error) || t('briefsContentFailed'), date: selectedDate })
+          }
+        })
+        return function () { alive = false }
+      }, [selectedDate, contentTick, store, t])
+
+      React.useEffect(function () {
+        if (!generating) return undefined
+        const timer = setInterval(function () {
+          if (typeof document !== 'undefined' && document.hidden === true) return
+          void store.refreshBriefs()
+        }, BRIEF_POLL_MS)
+        return function () { clearInterval(timer) }
+      }, [generating, store])
+
+      React.useEffect(function () {
+        const previous = prevGeneratingRef.current
+        prevGeneratingRef.current = generating
+        if (previous === true && generating === false) {
+          setContentTick(function (value) { return value + 1 })
+          void store.refreshBriefs()
+        }
+      }, [generating, store])
+
+      React.useEffect(function () {
+        if (!localPending) return
+        if (!generating && settings.generatingDate === null && settings.lastStatus !== 'running') setLocalPending(null)
+      }, [generating, settings.generatingDate, settings.lastStatus, localPending])
+
+      function refreshAll() {
+        setInlineError(null)
+        void store.refreshBriefs()
+        setContentTick(function (value) { return value + 1 })
+      }
+
+      function generate(day) {
+        if (generating) return
+        setInlineError(null)
+        setLocalPending(day)
+        store.generateBrief(day).then(function (result) {
+          if (!result.ok) {
+            setLocalPending(null)
+            setInlineError(result.error || t('briefsGenerateFailed'))
+            return
+          }
+          if (typeof props.addToast === 'function') props.addToast(t('briefsGenerated'), 'info')
+        })
+      }
+
+      const selectedItem = selectedDate === null ? null : (items.find(function (item) { return item.date === selectedDate }) || null)
+      const selectedGenerating = generating && (settings.generatingDate === selectedDate || localPending === selectedDate)
+      const todayGenerating = generating && (settings.generatingDate === today || localPending === today)
+
+      const listNodes = []
+      if (state.phase === 'loading' || (state.phase === 'idle' && items.length === 0)) {
+        listNodes.push(h('div', { key: 'loading', className: 'dsh-ps-transcript-state' }, h(Spinner), h('span', null, t('briefsLoading'))))
+      } else if (state.phase === 'error' && items.length === 0) {
+        listNodes.push(h('div', { key: 'error', className: 'dsh-ps-transcript-state' },
+          h('span', null, t('briefsLoadFailed')),
+          h('button', { type: 'button', className: 'dsh-ps-btn dsh-ps-btn-sm', onClick: refreshAll }, t('retry'))))
+      } else if (items.length === 0) {
+        listNodes.push(h('div', { key: 'empty', className: 'dsh-ps-transcript-state' }, h('span', null, t('briefsEmpty'))))
+      } else {
+        for (let i = 0; i < items.length; i += 1) {
+          const item = items[i]
+          const isCurrent = item.date === selectedDate
+          const itemGenerating = generating && (settings.generatingDate === item.date || localPending === item.date)
+          const metaChildren = []
+          if (item.bytes > 0) metaChildren.push(h('span', { key: 'size' }, formatBytes(item.bytes)))
+          if (item.updatedAt > 0) metaChildren.push(h('span', { key: 'time' }, formatTime(item.updatedAt)))
+          if (itemGenerating) metaChildren.push(h('span', { key: 'gen', className: 'dsh-ps-report-item-tag' }, h(Spinner), h('span', null, t('briefGenerating'))))
+          listNodes.push(h('button', {
+            key: item.date,
+            type: 'button',
+            className: 'dsh-ps-report-item',
+            'data-brief-date': item.date,
+            'aria-current': isCurrent ? 'true' : 'false',
+            onClick: function () { setSelectedDate(item.date) },
+          },
+          h('span', { className: 'dsh-ps-report-item-date' }, item.date),
+          h('span', { className: 'dsh-ps-report-item-meta' },
+            item.date === today ? h('span', { key: 'today', className: 'dsh-ps-report-item-tag' }, t('briefsToday')) : null,
+            metaChildren)))
+        }
+      }
+
+      let mainContent = null
+      if (!supported) {
+        mainContent = h('div', { className: 'dsh-ps-report-state' }, h('span', null, t('briefUnsupported')))
+      } else if (items.length === 0 && state.phase !== 'loading') {
+        mainContent = h('div', { className: 'dsh-ps-report-state' },
+          h(IconFileText, { size: 26, className: 'dsh-ps-empty-illustration' }),
+          h('span', null, t('briefsEmptyHint')),
+          h('div', { className: 'dsh-ps-report-empty-actions' },
+            h('button', {
+              type: 'button',
+              className: 'dsh-ps-btn dsh-ps-btn-primary',
+              disabled: generating,
+              onClick: function () { generate(today) },
+            }, todayGenerating ? h(Spinner) : h(IconPlay, { size: 14 }),
+            h('span', null, todayGenerating ? t('briefGenerating') : t('briefsGenerate')))))
+      } else if (selectedDate === null) {
+        mainContent = h('div', { className: 'dsh-ps-report-state' }, h('span', null, t('briefsSelect')))
+      } else if (content.phase === 'loading') {
+        mainContent = h('div', { className: 'dsh-ps-report-state' }, h(Spinner), h('span', null, t('briefsContentLoading')))
+      } else if (content.phase === 'error') {
+        mainContent = h('div', { className: 'dsh-ps-report-state' },
+          h(IconAlert, { size: 22, className: 'dsh-ps-empty-illustration' }),
+          h('span', null, t('briefsContentFailed') + (content.error ? ' — ' + content.error : '')),
+          h('button', {
+            type: 'button',
+            className: 'dsh-ps-btn dsh-ps-btn-sm',
+            onClick: function () { setContentTick(function (value) { return value + 1 }) },
+          }, t('retry')))
+      } else {
+        mainContent = h('pre', { className: 'dsh-ps-report-pre' }, content.text)
+      }
+
+      let headExtra = null
+      if (selectedGenerating || todayGenerating) {
+        headExtra = h('span', { className: 'dsh-ps-report-generating' }, h(Spinner), h('span', null, t('briefGenerating')))
+      }
+
+      return h('div', { className: 'dsh-ps-drawer-layer' },
+        h('div', { className: 'dsh-ps-drawer-mask', 'aria-hidden': 'true', onClick: props.onClose }),
+        h('div', {
+          className: 'dsh-ps-drawer dsh-ps-report-drawer dsh-ps-brief-drawer',
+          role: 'dialog',
+          'aria-modal': 'true',
+          'aria-labelledby': 'dsh-ps-brief-title',
+          ref: dialogRef,
+          tabIndex: -1,
+        },
+        h('div', { className: 'dsh-ps-drawer-head' },
+          h('span', { className: 'dsh-ps-drawer-avatar', 'data-status': generating ? 'running' : 'done', 'aria-hidden': 'true' },
+            generating ? h(Spinner) : h(IconFileText, { size: 20 })),
+          h('div', { className: 'dsh-ps-drawer-titles' },
+            h('h2', { className: 'dsh-ps-drawer-title', id: 'dsh-ps-brief-title' }, t('briefsTitle')),
+            h('div', { className: 'dsh-ps-drawer-badges' },
+              h('span', { className: 'dsh-ps-drawer-badges' }, h('span', { className: 'dsh-ps-section-hint' }, t('briefsSub'))),
+              h('span', { className: 'dsh-ps-report-status-chip', 'data-tone': briefStatusTone(settings) }, briefStatusText(t, settings)),
+              headExtra)),
+          h('button', {
+            type: 'button',
+            ref: closeBtnRef,
+            className: 'dsh-ps-btn dsh-ps-btn-ghost dsh-ps-btn-icon',
+            'aria-label': t('close'),
+            title: t('close'),
+            onClick: props.onClose,
+          }, h(IconClose, { size: 16 }))),
+        inlineError ? h('div', { className: 'dsh-ps-inline-error', role: 'alert', style: { padding: '8px 16px 0' } }, inlineError) : null,
+        h('div', { className: 'dsh-ps-report-body' },
+          h('div', { className: 'dsh-ps-report-list', 'aria-label': t('briefsTitle') }, listNodes),
+          h('div', { className: 'dsh-ps-report-main' },
+            h('div', { className: 'dsh-ps-report-main-head' },
+              h('div', { className: 'dsh-ps-report-main-title' },
+                selectedDate !== null ? selectedDate : t('briefsNoSelection'),
+                selectedDate !== null ? h('span', { className: 'dsh-ps-report-main-sub' },
+                  selectedItem && selectedItem.bytes > 0 ? ' · ' + formatBytes(selectedItem.bytes) : '') : null),
+              h('span', { className: 'dsh-ps-section-grow' }),
+              selectedDate !== null
+                ? h('button', {
+                  type: 'button',
+                  className: 'dsh-ps-btn dsh-ps-btn-sm',
+                  disabled: generating,
+                  onClick: function () { generate(selectedDate) },
+                }, selectedGenerating ? h(Spinner) : h(IconRefresh, { size: 13 }),
+                h('span', null, selectedGenerating ? t('briefGenerating') : t('briefsRegenerate')))
+                : null,
+              h('button', {
+                type: 'button',
+                className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-primary',
+                disabled: generating,
+                onClick: function () { generate(today) },
+              }, todayGenerating ? h(Spinner) : h(IconPlay, { size: 13 }),
+              h('span', null, todayGenerating ? t('briefGenerating') : t('briefsGenerate'))),
+              h('button', {
+                type: 'button',
+                className: 'dsh-ps-btn dsh-ps-btn-sm dsh-ps-btn-ghost',
+                'aria-label': t('briefsRefresh'),
+                title: t('briefsRefresh'),
+                disabled: state.phase === 'loading',
+                onClick: refreshAll,
+              }, h(IconRefresh, { size: 14 }))),
+            h('div', { className: 'dsh-ps-report-content-wrap' }, mainContent)))))
+    }
+
+    function NotificationsPopover(props) {
+      const t = props.t
+      const tasks = Array.isArray(props.tasks) ? props.tasks : []
+      const now = props.now
+      const lastSeen = props.lastSeen
+      const popRef = React.useRef(null)
+      const closeRef = React.useRef(props.onClose)
+      closeRef.current = props.onClose
+
+      React.useEffect(function () {
+        if (typeof document === 'undefined') return undefined
+        function onPointerDown(event) {
+          const node = popRef.current
+          if (!node) return
+          if (node.contains(event.target)) return
+          closeRef.current()
+        }
+        function onKeyDown(event) {
+          if (event.key !== 'Escape') return
+          event.preventDefault()
+          event.stopPropagation()
+          closeRef.current()
+        }
+        document.addEventListener('mousedown', onPointerDown, true)
+        document.addEventListener('keydown', onKeyDown, true)
+        return function () {
+          document.removeEventListener('mousedown', onPointerDown, true)
+          document.removeEventListener('keydown', onKeyDown, true)
+        }
+      }, [])
+
+      const waiting = waitingTasksOf(tasks)
+      const waitingNodes = []
+      for (let i = 0; i < waiting.length && i < NOTIF_WAITING_MAX; i += 1) {
+        const task = waiting[i]
+        waitingNodes.push(h('button', {
+          key: task.id,
+          type: 'button',
+          className: 'dsh-ps-notif-item',
+          onClick: function () {
+            if (task.status === 'blocked') props.onOpenTaskChat(task)
+            else props.onOpenTask(task.id)
+          },
+        },
+        h(StatusDot, { status: task.status }),
+        h('span', { className: 'dsh-ps-notif-item-title' }, task.title),
+        h('span', { className: 'dsh-ps-notif-item-hint' }, statusLabel(t, task.status))))
+      }
+      const recent = recentEventsOf(tasks, now)
+      const recentNodes = []
+      for (let i = 0; i < recent.length && i < NOTIF_RECENT_MAX; i += 1) {
+        const task = recent[i]
+        recentNodes.push(h('button', {
+          key: task.id,
+          type: 'button',
+          className: 'dsh-ps-notif-item',
+          onClick: function () { props.onOpenTask(task.id) },
+        },
+        h(StatusDot, { status: task.status }),
+        h('span', { className: 'dsh-ps-notif-item-title' }, task.title),
+        h('span', { className: 'dsh-ps-notif-item-hint' }, formatRelativeTime(t, taskEventAt(task), now))))
+      }
+      let unread = 0
+      if (lastSeen > 0) {
+        const seen = new Set()
+        const events = waiting.slice()
+        for (let i = 0; i < recent.length; i += 1) {
+          if (events.indexOf(recent[i]) < 0) events.push(recent[i])
+        }
+        for (let i = 0; i < events.length; i += 1) {
+          const es = seen.has(events[i].id)
+          seen.add(events[i].id)
+          if (!es && taskEventAt(events[i]) > lastSeen) unread += 1
+        }
+      }
+      const empty = waitingNodes.length === 0 && recentNodes.length === 0
+
+      return h('div', {
+        className: 'dsh-ps-notif-popover',
+        role: 'dialog',
+        'aria-label': t('notificationsAria'),
+        ref: popRef,
+      },
+      h('div', { className: 'dsh-ps-notif-head' },
+        h('span', { className: 'dsh-ps-notif-title' }, t('notifications')),
+        unread > 0 ? h('span', { className: 'dsh-ps-notif-unread' }, t('notificationUnread', { count: unread })) : null,
+        h('span', { className: 'dsh-ps-today-sec-grow' }),
+        h('span', { className: 'dsh-ps-notif-item-hint' }, unread > 0 ? '' : t('notificationRead'))),
+      waitingNodes.length > 0
+        ? h('div', { className: 'dsh-ps-notif-section' },
+          h('p', { className: 'dsh-ps-notif-section-title' }, t('needsYou')),
+          waitingNodes)
+        : null,
+      recentNodes.length > 0
+        ? h('div', { className: 'dsh-ps-notif-section' },
+          h('p', { className: 'dsh-ps-notif-section-title' }, t('recentActivity')),
+          recentNodes)
+        : null,
+      empty ? h('p', { className: 'dsh-ps-notif-empty' }, t('noActivity')) : null,
+      h('div', { className: 'dsh-ps-notif-foot' },
+        h('button', {
+          type: 'button',
+          className: 'dsh-ps-btn dsh-ps-btn-sm',
+          onClick: props.onMarkAllRead,
+        }, h(IconCheck, { size: 13 }), h('span', null, t('markAllRead')))))
+    }
+
+    function WebhookLogDialog(props) {
+      const t = props.t
+      const store = props.store
+      const dialogRef = React.useRef(null)
+      const closeBtnRef = React.useRef(null)
+      const [state, setState] = React.useState({ phase: 'loading', items: [], error: null })
+
+      useDialogA11y(dialogRef, props.onClose, true, closeBtnRef)
+
+      function load(initial) {
+        setState(function (previous) {
+          if (initial && previous.items.length === 0) return { phase: 'loading', items: previous.items, error: null }
+          return previous
+        })
+        store.loadWebhookLog().then(function (result) {
+          if (result.ok) setState({ phase: 'ready', items: result.data.items, error: null })
+          else setState({ phase: 'error', items: [], error: result.error || t('notificationLogFailed') })
+        })
+      }
+
+      React.useEffect(function () {
+        load(true)
+      }, [store])
+
+      const rows = []
+      for (let i = 0; i < state.items.length; i += 1) {
+        const item = state.items[i]
+        rows.push(h('div', { key: String(item.at) + ':' + i, className: 'dsh-ps-log-row' },
+          h('span', { className: 'dsh-ps-log-state', 'data-ok': item.ok ? 'true' : 'false' }, item.ok ? t('webhookStatusOk') : t('webhookStatusFailed')),
+          h('div', { className: 'dsh-ps-log-main' },
+            h('span', { className: 'dsh-ps-log-event' }, webhookEventLabel(t, item.event)),
+            h('span', { className: 'dsh-ps-log-meta' }, formatTime(item.at) + (item.httpStatus !== null ? ' · HTTP ' + item.httpStatus : '')),
+            item.error ? h('p', { className: 'dsh-ps-log-error' }, item.error) : null)))
+      }
+
+      let body = null
+      if (state.phase === 'loading') {
+        body = h('div', { className: 'dsh-ps-report-state' }, h(Spinner), h('span', null, t('notifications')))
+      } else if (state.phase === 'error') {
+        body = h('div', { className: 'dsh-ps-report-state' },
+          h(IconAlert, { size: 22, className: 'dsh-ps-empty-illustration' }),
+          h('span', null, t('notificationLogFailed') + (state.error ? ' — ' + state.error : '')),
+          h('button', { type: 'button', className: 'dsh-ps-btn dsh-ps-btn-sm', onClick: function () { load(false) } }, t('retry')))
+      } else if (rows.length === 0) {
+        body = h('div', { className: 'dsh-ps-report-state' },
+          h(IconSend, { size: 24, className: 'dsh-ps-empty-illustration' }),
+          h('span', null, t('notificationLogEmpty')))
+      } else {
+        body = h('div', { className: 'dsh-ps-log-list', 'aria-label': t('notificationLogTitle') }, rows)
+      }
+
+      return h('div', { className: 'dsh-ps-dialog-layer' },
+        h('div', { className: 'dsh-ps-dialog-mask', 'aria-hidden': 'true', onClick: props.onClose }),
+        h('div', {
+          className: 'dsh-ps-dialog',
+          role: 'dialog',
+          'aria-modal': 'true',
+          'aria-labelledby': 'dsh-ps-log-title',
+          ref: dialogRef,
+          tabIndex: -1,
+        },
+        h('div', { className: 'dsh-ps-dialog-head' },
+          h('div', { className: 'dsh-ps-dialog-titles' },
+            h('h2', { className: 'dsh-ps-dialog-title', id: 'dsh-ps-log-title' }, t('notificationLogTitle')),
+            h('p', { className: 'dsh-ps-dialog-sub' }, t('notificationLogSub'))),
+          h('button', {
+            type: 'button',
+            ref: closeBtnRef,
+            className: 'dsh-ps-btn dsh-ps-btn-ghost dsh-ps-btn-icon',
+            'aria-label': t('close'),
+            title: t('close'),
+            onClick: props.onClose,
+          }, h(IconClose, { size: 16 }))),
+        h('div', { className: 'dsh-ps-dialog-body' }, body),
+        h('div', { className: 'dsh-ps-dialog-foot' },
+          h('button', {
+            type: 'button',
+            className: 'dsh-ps-btn dsh-ps-btn-sm',
+            disabled: state.phase === 'loading',
+            onClick: function () { load(false) },
+          }, h(IconRefresh, { size: 13 }), h('span', null, t('notificationLogRefresh'))),
+          h('span', { className: 'dsh-ps-dialog-foot-grow' }),
+          h('button', { type: 'button', className: 'dsh-ps-btn dsh-ps-btn-primary', onClick: props.onClose }, t('close')))))
     }
 
     // ------------------------------------------------------------------ reports drawer
@@ -6884,7 +8685,8 @@ window.__ModuleLoader__.load({
       const meta = snap.evolution || defaultEvolutionMeta()
       const dialogRef = React.useRef(null)
       const closeBtnRef = React.useRef(null)
-      const [tab, setTab] = React.useState('retrospective')
+      const initialTab = EVOLUTION_TAB_KEYS.indexOf(props.initialTab) >= 0 ? props.initialTab : 'retrospective'
+      const [tab, setTab] = React.useState(initialTab)
       const [data, setData] = React.useState({
         phase: 'idle',
         settings: null,
@@ -7828,6 +9630,14 @@ window.__ModuleLoader__.load({
       const [autoBusy, setAutoBusy] = React.useState(false)
       const [reorderBusy, setReorderBusy] = React.useState(false)
       const [busyAction, setBusyAction] = React.useState(null)
+      const [view, setView] = React.useState('today')
+      const [briefsOpen, setBriefsOpen] = React.useState(false)
+      const [notifOpen, setNotifOpen] = React.useState(false)
+      const [webhookLogOpen, setWebhookLogOpen] = React.useState(false)
+      const [evolutionTab, setEvolutionTab] = React.useState('retrospective')
+      const [lastSeen, setLastSeen] = React.useState(readLastSeenTime)
+      const [captureBusy, setCaptureBusy] = React.useState(false)
+      const [focusChatId, setFocusChatId] = React.useState(null)
       const [columnFilters, setColumnFilters] = React.useState(createColumnFilterState)
       const funnelRefs = React.useRef(null)
       if (funnelRefs.current === null) {
@@ -7838,7 +9648,7 @@ window.__ModuleLoader__.load({
           ended: React.createRef(),
         }
       }
-      const activeTimer = snap.runningCount > 0 || tasks.some(function (task) { return task.status === 'blocked' })
+      const activeTimer = view === 'today' || snap.runningCount > 0 || tasks.some(function (task) { return task.status === 'blocked' })
       const now = useNow(activeTimer)
       const suppressClickRef = React.useRef(false)
       const dragCleanupRef = React.useRef(null)
@@ -7851,6 +9661,15 @@ window.__ModuleLoader__.load({
         if (!settingsOpen) return
         if (snap.modelsPhase === 'idle') store.loadModels(false)
       }, [settingsOpen, snap.modelsPhase, store])
+
+      // v0.6: the briefs card needs the compact meta once; the Host only ships
+      // it with /state on v0.6+, so old snapshots stay in unsupported fallback.
+      React.useEffect(function () {
+        if (view !== 'today') return
+        const briefs = snap.briefs
+        if (!briefs || briefs.supported === false) return
+        if (briefs.phase === 'idle') void store.refreshBriefs()
+      }, [view, snap.briefs ? snap.briefs.phase : 'idle', snap.briefs ? snap.briefs.supported : true, store])
 
       // Restore focus to the header entry when the evolution drawer closes.
       React.useEffect(function () {
@@ -7946,9 +9765,76 @@ window.__ModuleLoader__.load({
         store.saveSettings({ autoStart: settings.autoStart !== true }).then(function () { setAutoBusy(false) })
       }
 
+      // One-line capture: title + prompt, status idea. The Host needs an
+      // absolute cwd, so fall back to the last used / guessed workspace folder.
+      function captureTask(title) {
+        const text = typeof title === 'string' ? title.trim() : ''
+        if (text === '') return Promise.resolve({ ok: false, error: null })
+        if (captureBusy) return Promise.resolve({ ok: false, error: null })
+        const guess = lastDir !== '' ? lastDir : guessDefaultDirectory(ctx)
+        if (!isAbsolutePath(guess)) {
+          const message = t('captureNoCwd')
+          addToast(message, 'error')
+          return Promise.resolve({ ok: false, error: message })
+        }
+        setCaptureBusy(true)
+        return store.publish({
+          title: text,
+          prompt: text,
+          cwd: guess,
+          status: 'idea',
+          priority: 'normal',
+        }).then(function (result) {
+          setCaptureBusy(false)
+          if (result.ok) {
+            setLastDir(guess)
+            addToast(t('captureSaved'), 'success')
+            void store.refresh()
+          } else if (result.error) {
+            addToast(result.error, 'error')
+          }
+          return result
+        }, function (error) {
+          setCaptureBusy(false)
+          addToast(t('publishFailed') + ' — ' + (error && error.message ? error.message : t('unknownError')), 'error')
+          return { ok: false, error: null }
+        })
+      }
+
+      function generateBriefNow(day) {
+        if (briefGenerating) return
+        store.generateBrief(day).then(function (result) {
+          if (!result.ok) {
+            if (result.error) addToast(result.error, 'error')
+            return
+          }
+          addToast(t('briefGenerating'), 'info')
+          void store.refreshBriefs()
+        })
+      }
+
       function openCard(id) {
         if (suppressClickRef.current) return
+        setFocusChatId(null)
         setSelectedId(id)
+      }
+
+      function openTaskChat(task) {
+        if (!task) return
+        setNotifOpen(false)
+        setFocusChatId(task.id)
+        setSelectedId(task.id)
+      }
+
+      function openEvolution(tab) {
+        setEvolutionTab(EVOLUTION_TAB_KEYS.indexOf(tab) >= 0 ? tab : 'retrospective')
+        setEvolutionOpen(true)
+      }
+
+      function markNotificationsRead() {
+        const stamp = Date.now()
+        setLastSeen(stamp)
+        writeLastSeenTime(stamp)
       }
 
       function openSession(task) {
@@ -8515,6 +10401,30 @@ window.__ModuleLoader__.load({
         boardContent = h('div', { className: 'dsh-ps-board' }, ideaColumn, pendingColumn, claimedColumn, endedColumn)
       }
 
+      // v0.6: notification centre derives its feed from /state (no extra Host
+      // endpoint) — waiting tasks plus the last 24h of done/failed/blocked.
+      const briefSettings = snap.briefs.settings || (settings && settings.morningBrief) || defaultMorningBriefSettings()
+      const briefGenerating = briefSettings.lastStatus === 'running' || Boolean(briefSettings.generatingDate)
+      const notifEvents = []
+      const notifSeenIds = new Set()
+      const waitingForBadge = waitingTasksOf(tasks)
+      for (let i = 0; i < waitingForBadge.length; i += 1) {
+        notifSeenIds.add(waitingForBadge[i].id)
+        notifEvents.push(taskEventAt(waitingForBadge[i]))
+      }
+      const recentForBadge = recentEventsOf(tasks, now)
+      for (let i = 0; i < recentForBadge.length; i += 1) {
+        if (notifSeenIds.has(recentForBadge[i].id)) continue
+        notifSeenIds.add(recentForBadge[i].id)
+        notifEvents.push(taskEventAt(recentForBadge[i]))
+      }
+      let unreadCount = 0
+      if (lastSeen > 0) {
+        for (let i = 0; i < notifEvents.length; i += 1) {
+          if (notifEvents[i] > lastSeen) unreadCount += 1
+        }
+      }
+
       const headerActions = h('div', { className: 'dsh-ps-header-actions' },
         h('span', { className: 'dsh-ps-switch-row' },
           h(Switch, {
@@ -8544,7 +10454,7 @@ window.__ModuleLoader__.load({
           title: proposedSkillCount > 0
             ? t('skillCandidateBadge', { count: proposedSkillCount })
             : t('evolutionButton'),
-          onClick: function () { setEvolutionOpen(true) },
+          onClick: function () { openEvolution('retrospective') },
         }, h(IconSpark, { size: 15 }), h('span', null, t('evolutionButton')),
         proposedSkillCount > 0
           ? h('span', { className: 'dsh-ps-evo-entry-badge', 'aria-hidden': 'true' },
@@ -8561,40 +10471,117 @@ window.__ModuleLoader__.load({
           type: 'button',
           className: 'dsh-ps-btn dsh-ps-btn-primary',
           onClick: function () { openPublish('single') },
-        }, h(IconPlus, { size: 16 }), h('span', null, t('publish'))))
+        }, h(IconPlus, { size: 16 }), h('span', null, t('publish'))),
+        h('div', { className: 'dsh-ps-notif-wrap' },
+          h('button', {
+            type: 'button',
+            className: 'dsh-ps-bell',
+            'data-unread': unreadCount > 0 ? 'true' : undefined,
+            'aria-label': unreadCount > 0
+              ? t('notificationsAria') + ' · ' + t('notificationUnread', { count: unreadCount })
+              : t('notificationsAria'),
+            'aria-haspopup': 'dialog',
+            'aria-expanded': notifOpen ? 'true' : 'false',
+            title: t('notifications'),
+            onClick: function () { setNotifOpen(function (value) { return !value }) },
+          },
+          h(IconBell, { size: 17 }),
+          unreadCount > 0
+            ? h('span', { className: 'dsh-ps-bell-badge', 'aria-hidden': 'true' }, unreadCount > 9 ? '9+' : String(unreadCount))
+            : null),
+          notifOpen
+            ? h(NotificationsPopover, {
+              t: t,
+              tasks: tasks,
+              now: now,
+              lastSeen: lastSeen,
+              onOpenTask: openCard,
+              onOpenTaskChat: openTaskChat,
+              onMarkAllRead: markNotificationsRead,
+              onClose: function () { setNotifOpen(false) },
+            })
+            : null))
+
+      const headerNode = h('header', { className: 'dsh-ps-header' },
+        h('div', { className: 'dsh-ps-header-main' },
+          h('div', { className: 'dsh-ps-title-row' },
+            h('h1', { className: 'dsh-ps-title' }, t('panelTitle')),
+            h('span', {
+              className: 'dsh-ps-runpill',
+              'aria-label': t('runningPill', { running: snap.runningCount, limit: runningLimit === null ? '—' : runningLimit }),
+            },
+            h(StatusDot, { status: snap.runningCount > 0 ? 'running' : 'pending' }),
+            h('span', null, t('running') + ' '),
+            h('strong', null, String(snap.runningCount)),
+            h('span', null, ' / ' + (runningLimit === null ? '—' : String(runningLimit))))),
+          h('p', { className: 'dsh-ps-subtitle' }, t('subtitle'))),
+        h('div', { className: 'dsh-ps-header-mid' },
+          h('div', { className: 'dsh-ps-views', role: 'tablist', 'aria-label': t('viewSwitchAria') },
+            h('button', {
+              type: 'button',
+              role: 'tab',
+              className: 'dsh-ps-view-btn',
+              'aria-selected': view === 'today' ? 'true' : 'false',
+              onClick: function () { setView('today'); setNotifOpen(false) },
+            }, h('span', null, t('viewToday'))),
+            h('button', {
+              type: 'button',
+              role: 'tab',
+              className: 'dsh-ps-view-btn',
+              'aria-selected': view === 'tasks' ? 'true' : 'false',
+              onClick: function () { setView('tasks'); setNotifOpen(false) },
+            }, h('span', null, t('viewTasks'))))),
+        headerActions)
+
+      const statsNode = h('div', { className: 'dsh-ps-stats', role: 'group', 'aria-label': t('kpiGroupLabel') },
+        h(KpiModule, { metric: 'idea', tone: 'idea', icon: IconSpark, label: t('kpiIdea'), value: String(snap.counts.idea), sub: kpiIdeaSub, t: t }),
+        h(KpiModule, { metric: 'pending', tone: 'pending', icon: IconInbox, label: t('kpiPending'), value: String(snap.counts.pending), sub: kpiPendingSub, t: t }),
+        h(KpiModule, { metric: 'processing', tone: 'processing', icon: IconPlay, label: t('kpiProcessing'), value: String(processingCount), sub: kpiProcessingSub, pulse: snap.runningCount > 0, progress: { ratio: runningRatio, active: snap.runningCount > 0 }, t: t }),
+        h(KpiModule, { metric: 'done', tone: 'done', icon: IconCheckCircle, label: t('kpiDone'), value: String(snap.counts.done), sub: kpiDoneSub, t: t }),
+        h(KpiModule, { metric: 'failed', tone: 'failed', icon: IconAlert, label: t('kpiFailed'), value: String(snap.counts.failed), sub: kpiFailedSub, t: t }))
+
+      const todayNode = h(TodayView, {
+        t: t,
+        store: store,
+        ctx: ctx,
+        snap: snap,
+        now: now,
+        lastDir: lastDir,
+        captureBusy: captureBusy,
+        onCapture: captureTask,
+        onOpenTask: openCard,
+        onOpenTaskChat: openTaskChat,
+        onOpenSession: openSession,
+        onAction: runCardAction,
+        onEdit: openEdit,
+        onOpenBriefs: function () { setBriefsOpen(true) },
+        onGenerateBrief: generateBriefNow,
+        onGoSettings: function () { setSettingsOpen(true) },
+        onGoTasks: function () { setView('tasks'); setNotifOpen(false) },
+        onOpenReports: function () { setReportsOpen(true) },
+        onOpenEvolution: openEvolution,
+        onOpenWebhookLog: function () { setWebhookLogOpen(true) },
+      })
+
+      const pageBody = view === 'today'
+        ? todayNode
+        : h(React.Fragment, null,
+          statsNode,
+          reorderBusy
+            ? h('div', { className: 'dsh-ps-settings-saving', role: 'status' }, h(Spinner), h('span', null, t('reorderSaving')))
+            : null,
+          boardContent)
 
       const body = h(React.Fragment, null,
         h('div', { className: 'dsh-ps-page' },
           h('div', { className: 'dsh-ps-page-inner' },
-            h('header', { className: 'dsh-ps-header' },
-              h('div', { className: 'dsh-ps-header-main' },
-                h('div', { className: 'dsh-ps-title-row' },
-                  h('h1', { className: 'dsh-ps-title' }, t('panelTitle')),
-                  h('span', {
-                    className: 'dsh-ps-runpill',
-                    'aria-label': t('runningPill', { running: snap.runningCount, limit: runningLimit === null ? '—' : runningLimit }),
-                  },
-                  h(StatusDot, { status: snap.runningCount > 0 ? 'running' : 'pending' }),
-                  h('span', null, t('running') + ' '),
-                  h('strong', null, String(snap.runningCount)),
-                  h('span', null, ' / ' + (runningLimit === null ? '—' : String(runningLimit))))),
-                h('p', { className: 'dsh-ps-subtitle' }, t('subtitle'))),
-              headerActions),
+            headerNode,
             h(ErrorBanner, {
               error: snap.error,
               dismissLabel: t('dismiss'),
               onDismiss: store.clearError,
             }),
-            h('div', { className: 'dsh-ps-stats', role: 'group', 'aria-label': t('kpiGroupLabel') },
-              h(KpiModule, { metric: 'idea', tone: 'idea', icon: IconSpark, label: t('kpiIdea'), value: String(snap.counts.idea), sub: kpiIdeaSub, t: t }),
-              h(KpiModule, { metric: 'pending', tone: 'pending', icon: IconInbox, label: t('kpiPending'), value: String(snap.counts.pending), sub: kpiPendingSub, t: t }),
-              h(KpiModule, { metric: 'processing', tone: 'processing', icon: IconPlay, label: t('kpiProcessing'), value: String(processingCount), sub: kpiProcessingSub, pulse: snap.runningCount > 0, progress: { ratio: runningRatio, active: snap.runningCount > 0 }, t: t }),
-              h(KpiModule, { metric: 'done', tone: 'done', icon: IconCheckCircle, label: t('kpiDone'), value: String(snap.counts.done), sub: kpiDoneSub, t: t }),
-              h(KpiModule, { metric: 'failed', tone: 'failed', icon: IconAlert, label: t('kpiFailed'), value: String(snap.counts.failed), sub: kpiFailedSub, t: t })),
-            reorderBusy
-              ? h('div', { className: 'dsh-ps-settings-saving', role: 'status' }, h(Spinner), h('span', null, t('reorderSaving')))
-              : null,
-            boardContent)),
+            pageBody)),
         selectedTask
           ? h(DetailDrawer, {
             key: selectedTask.id,
@@ -8603,6 +10590,7 @@ window.__ModuleLoader__.load({
             t: t,
             task: selectedTask,
             chainSource: chainSource,
+            focusComposer: focusChatId === selectedTask.id,
             onOpenTask: function (id) { setSelectedId(id) },
             onOpenSession: openSession,
             onEdit: openEdit,
@@ -8648,11 +10636,14 @@ window.__ModuleLoader__.load({
             settings: settings,
             reportSettings: reportSettings,
             reportGenerating: reportGenerating,
+            briefSettings: briefSettings,
+            briefGenerating: briefGenerating,
             models: snap.models,
             modelsPhase: snap.modelsPhase,
             modelsError: snap.modelsError,
             addToast: addToast,
             onGenerateReport: generateReport,
+            onGenerateBrief: generateBriefNow,
             onClose: function () { setSettingsOpen(false) },
           })
           : null,
@@ -8666,14 +10657,33 @@ window.__ModuleLoader__.load({
             onClose: function () { setReportsOpen(false) },
           })
           : null,
+        briefsOpen
+          ? h(BriefsDrawer, {
+            key: 'briefs-drawer',
+            ctx: ctx,
+            store: store,
+            t: t,
+            addToast: addToast,
+            onClose: function () { setBriefsOpen(false) },
+          })
+          : null,
         evolutionOpen
           ? h(EvolutionDrawer, {
             key: 'evolution-drawer',
             ctx: ctx,
             store: store,
             t: t,
+            initialTab: evolutionTab,
             addToast: addToast,
             onClose: function () { setEvolutionOpen(false) },
+          })
+          : null,
+        webhookLogOpen
+          ? h(WebhookLogDialog, {
+            key: 'webhook-log-dialog',
+            t: t,
+            store: store,
+            onClose: function () { setWebhookLogOpen(false) },
           })
           : null,
         h(ToastStack, {

@@ -35,6 +35,9 @@ export const MAX_BATCH = 100
 export const MAX_GROUP = 60
 export const DEFAULT_GROUP = '秘书台'
 export const DEFAULT_REPORT_TIME = '21:00'
+// v0.6 adds the morning brief schedule additively: an older document simply
+// loads with the default 08:30 schedule and no run state.
+export const DEFAULT_BRIEF_TIME = '08:30'
 export const REPORT_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/
 export const REPORT_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 export const TASK_STATUSES = ['idea', 'pending', 'running', 'paused', 'blocked', 'done', 'failed', 'cancelled']
@@ -49,7 +52,8 @@ export const REPORT_STATUSES = ['idle', 'running', 'ok', 'failed']
 export const WEBHOOK_FORMATS = ['generic', 'feishu', 'wecom', 'dingtalk', 'slack']
 // v9 adds the retrospective event additively: an older document simply loads
 // with the new event enabled, exactly like the other notification defaults.
-export const WEBHOOK_EVENTS = ['claimed', 'succeeded', 'blocked', 'failed', 'dailyReport', 'retrospective']
+// v0.6 inserts the morning-brief event before the retrospective one.
+export const WEBHOOK_EVENTS = ['claimed', 'succeeded', 'blocked', 'failed', 'dailyReport', 'morningBrief', 'retrospective']
 export const WEBHOOK_STATUSES = ['idle', 'ok', 'failed']
 
 // ---------------------------------------------------------------------------
@@ -78,7 +82,15 @@ export function defaultWebhook() {
     format: 'generic',
     secretHeader: 'Authorization',
     secret: '',
-    events: { claimed: true, succeeded: true, blocked: true, failed: true, dailyReport: true, retrospective: true },
+    events: {
+      claimed: true,
+      succeeded: true,
+      blocked: true,
+      failed: true,
+      dailyReport: true,
+      morningBrief: true,
+      retrospective: true,
+    },
     lastStatus: 'idle',
     lastAt: null,
     lastEvent: null,
@@ -245,7 +257,11 @@ export function defaultSettings(stateDir = resolveDataDir()) {
     notifyOnDone: true,
     group: DEFAULT_GROUP,
     dailyReport: defaultDailyReport(stateDir),
+    morningBrief: defaultMorningBrief(stateDir),
     evolution: defaultEvolution(stateDir),
+    // A fresh store must already own the default notification config: the
+    // settings row and the webhook notifier both read it before the first save.
+    webhook: defaultWebhook(),
   }
 }
 
@@ -276,6 +292,39 @@ export function normalizePriority(value) {
     throw new HttpError(400, '优先级只能是 urgent（紧急）/ high（高）/ normal（普通）/ low（低）')
   }
   return text
+}
+
+// v0.6: the priority rank drives the *insertion position* of a pending task.
+// The user can still override the resulting order manually by dragging a card
+// or by using "run next", which move the row and are never re-sorted.
+export const PRIORITY_RANK = { urgent: 0, high: 1, normal: 2, low: 3 }
+
+export function pendingPriorityRank(priority) {
+  return Object.prototype.hasOwnProperty.call(PRIORITY_RANK, priority)
+    ? PRIORITY_RANK[priority]
+    : PRIORITY_RANK[DEFAULT_PRIORITY]
+}
+
+/**
+ * Index at which `task` should be spliced into `tasks` so that pending tasks
+ * read urgent -> high -> normal -> low while keeping the existing relative
+ * order of equal-rank tasks.
+ *
+ * Only the pending rows are considered: the insertion point is the first
+ * pending row with a strictly lower rank, otherwise just after the last
+ * pending row, otherwise the end of the array.
+ */
+export function pendingInsertIndex(tasks, task) {
+  const list = Array.isArray(tasks) ? tasks : []
+  const rank = pendingPriorityRank(task && task.priority)
+  let lastPending = -1
+  for (let index = 0; index < list.length; index += 1) {
+    const item = list[index]
+    if (!item || item.status !== 'pending') continue
+    lastPending = index
+    if (pendingPriorityRank(item.priority) > rank) return index
+  }
+  return lastPending >= 0 ? lastPending + 1 : list.length
 }
 
 /** The report directory always persists as an absolute path. */
@@ -318,6 +367,26 @@ export function isDefaultSecretaryEvolutionDir(value) {
   return basename(normalized) === 'evolution' && basename(dirname(normalized)) === '.personal-secretary'
 }
 
+/** The morning-brief output directory always persists as an absolute path. */
+export function resolveBriefDir(value, stateDir) {
+  const fallback = join(stateDir, 'briefs')
+  if (value === null || value === undefined) return fallback
+  const text = String(value).trim()
+  if (!text) return fallback
+  return resolve(text)
+}
+
+/**
+ * True for a brief directory that is the *default* of some secretary state
+ * directory (`<...>/.personal-secretary/briefs`). Such paths are remapped to
+ * this install's state directory when a state file moved.
+ */
+export function isDefaultSecretaryBriefDir(value) {
+  if (typeof value !== 'string' || value === '') return false
+  const normalized = resolve(value)
+  return basename(normalized) === 'briefs' && basename(dirname(normalized)) === '.personal-secretary'
+}
+
 function clampConcurrency(value) {
   const n = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(n)) return DEFAULT_CONCURRENCY
@@ -344,6 +413,53 @@ function normalizeDailyReport(raw, stateDir) {
   next.lastGeneratedAt = Number.isFinite(raw.lastGeneratedAt) ? raw.lastGeneratedAt : null
   next.generatingDate = typeof raw.generatingDate === 'string' && REPORT_DATE_PATTERN.test(raw.generatingDate)
     ? raw.generatingDate
+    : null
+  return next
+}
+
+/** Default schedule + runtime bookkeeping for the v0.6 morning-brief engine. */
+export function defaultMorningBrief(stateDir = resolveDataDir()) {
+  return {
+    enabled: true,
+    time: DEFAULT_BRIEF_TIME,
+    dir: join(stateDir, 'briefs'),
+    lastDate: null,
+    lastStatus: 'idle',
+    lastError: null,
+    lastGeneratedAt: null,
+    generatingDate: null,
+  }
+}
+
+/**
+ * Lenient normalisation for `settings.morningBrief` (load / restore only).
+ * A user settings patch is validated strictly in `updateSettings` instead.
+ *
+ * `previous` is the optional fallback used when the incoming document has no
+ * usable value for a field (for example a partial settings restore).
+ */
+export function normalizeMorningBrief(raw, stateDir = resolveDataDir(), previous = null) {
+  const base = previous && typeof previous === 'object' ? previous : defaultMorningBrief(stateDir)
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+  const next = defaultMorningBrief(stateDir)
+  next.enabled = source.enabled === undefined ? base.enabled !== false : source.enabled !== false
+  if (typeof source.time === 'string' && REPORT_TIME_PATTERN.test(source.time.trim())) {
+    next.time = source.time.trim()
+  } else if (typeof base.time === 'string' && REPORT_TIME_PATTERN.test(base.time)) {
+    next.time = base.time
+  }
+  next.dir = 'dir' in source ? resolveBriefDir(source.dir, stateDir) : resolveBriefDir(base.dir, stateDir)
+  const lastDate = source.lastDate === undefined ? base.lastDate : source.lastDate
+  next.lastDate = typeof lastDate === 'string' && REPORT_DATE_PATTERN.test(lastDate) ? lastDate : null
+  const lastStatus = source.lastStatus === undefined ? base.lastStatus : source.lastStatus
+  next.lastStatus = REPORT_STATUSES.includes(lastStatus) ? lastStatus : 'idle'
+  const lastError = source.lastError === undefined ? base.lastError : source.lastError
+  next.lastError = typeof lastError === 'string' && lastError !== '' ? lastError : null
+  const lastGeneratedAt = source.lastGeneratedAt === undefined ? base.lastGeneratedAt : source.lastGeneratedAt
+  next.lastGeneratedAt = Number.isFinite(lastGeneratedAt) ? lastGeneratedAt : null
+  const generatingDate = source.generatingDate === undefined ? base.generatingDate : source.generatingDate
+  next.generatingDate = typeof generatingDate === 'string' && REPORT_DATE_PATTERN.test(generatingDate)
+    ? generatingDate
     : null
   return next
 }
@@ -522,7 +638,7 @@ export class TaskStore {
       evolution: { lessons: [], skills: [], lastRunAt: null },
     }
     this.load()
-    if (migratedFrom || this.reportDirRemapped || this.evolutionDirRemapped) this.save()
+    if (migratedFrom || this.reportDirRemapped || this.evolutionDirRemapped || this.briefDirRemapped) this.save()
   }
 
   load() {
@@ -561,6 +677,16 @@ export class TaskStore {
         }
         this.evolutionDirRemapped = true
       }
+      const expectedBriefDir = join(this.dir, 'briefs')
+      const loadedBriefDir = this.state.settings.morningBrief.dir
+      if (isDefaultSecretaryBriefDir(loadedBriefDir) &&
+        resolve(loadedBriefDir) !== resolve(expectedBriefDir)) {
+        this.state.settings = {
+          ...this.state.settings,
+          morningBrief: { ...this.state.settings.morningBrief, dir: expectedBriefDir },
+        }
+        this.briefDirRemapped = true
+      }
     } catch {
       // A corrupt file must not take the plugin down; start with an empty board.
       this.state.tasks = []
@@ -579,6 +705,7 @@ export class TaskStore {
       notifyOnDone: raw.notifyOnDone !== false,
       group: normalizeGroup(raw.group),
       dailyReport: normalizeDailyReport(raw.dailyReport, this.dir),
+      morningBrief: normalizeMorningBrief(raw.morningBrief, this.dir),
       evolution: normalizeEvolutionSettings(raw.evolution, this.dir),
       webhook: normalizeWebhook(raw.webhook),
     }
@@ -791,7 +918,13 @@ export class TaskStore {
       updatedAt: Date.now(),
     }
     if (typeof input.chainFrom === 'string' && input.chainFrom !== '') task.chainFrom = input.chainFrom
-    this.state.tasks.push(task)
+    // v0.6: a task created directly into the queue is inserted by priority
+    // instead of appended, so the array order stays the claim order.
+    if (task.status === 'pending') {
+      this.state.tasks.splice(pendingInsertIndex(this.state.tasks, task), 0, task)
+    } else {
+      this.state.tasks.push(task)
+    }
     this.bump()
     this.save()
     return task
@@ -833,9 +966,13 @@ export class TaskStore {
       }
       if (chain && previousId) task.chainFrom = previousId
       previousId = task.id
+      if (task.status === 'pending') {
+        this.state.tasks.splice(pendingInsertIndex(this.state.tasks, task), 0, task)
+      } else {
+        this.state.tasks.push(task)
+      }
       created.push(task)
     }
-    this.state.tasks.push(...created)
     this.bump()
     this.save()
     return created
@@ -866,14 +1003,29 @@ export class TaskStore {
   }
 
   /**
-   * idea -> pending: the user decided to start an idea. The task keeps its
-   * position in the global array, so promoting never reorders the queue.
+   * idea -> pending: the user decided to start an idea. v0.6 inserts the task
+   * by priority; dragging a card or using "run next" stays a later manual
+   * override of that computed order.
    */
   promote(id) {
     const task = this.find(id)
     if (!task) throw new HttpError(404, '任务不存在')
     if (task.status !== 'idea') throw new HttpError(400, '只有待开始中的任务可以移入排队中')
     task.status = 'pending'
+    task.updatedAt = Date.now()
+    this.state.tasks = this.state.tasks.filter(item => item.id !== task.id)
+    this.state.tasks.splice(pendingInsertIndex(this.state.tasks, task), 0, task)
+    this.bump()
+    this.save()
+    return task
+  }
+
+  /** Re-insert one pending task by its priority (priority change / retry). */
+  repositionPending(id) {
+    const task = this.find(id)
+    if (!task || task.status !== 'pending') return task
+    this.state.tasks = this.state.tasks.filter(item => item.id !== task.id)
+    this.state.tasks.splice(pendingInsertIndex(this.state.tasks, task), 0, task)
     task.updatedAt = Date.now()
     this.bump()
     this.save()
@@ -981,6 +1133,7 @@ export class TaskStore {
     const next = {
       ...this.state.settings,
       dailyReport: { ...this.state.settings.dailyReport },
+      morningBrief: { ...(this.state.settings.morningBrief || defaultMorningBrief(this.dir)) },
       evolution: { ...this.state.settings.evolution },
     }
     if (patch && typeof patch === 'object') {
@@ -1050,6 +1203,30 @@ export class TaskStore {
         }
         if ('dir' in incoming) next.dailyReport.dir = resolveReportDir(incoming.dir, this.dir)
       }
+      if ('morningBrief' in patch) {
+        const brief = patch.morningBrief
+        if (brief !== null && (typeof brief !== 'object' || Array.isArray(brief))) {
+          throw new HttpError(400, '晨间简报设置格式不正确')
+        }
+        const incoming = brief && typeof brief === 'object' ? brief : {}
+        // Only schedule preferences are user-writable; run state
+        // (lastStatus/lastDate/generatingDate/...) has its own setter.
+        if ('enabled' in incoming) next.morningBrief.enabled = incoming.enabled !== false
+        if ('time' in incoming) {
+          const time = String(incoming.time === null || incoming.time === undefined ? '' : incoming.time).trim()
+          if (!REPORT_TIME_PATTERN.test(time)) {
+            throw new HttpError(400, '晨间简报时间必须是 24 小时制 HH:mm')
+          }
+          next.morningBrief.time = time
+        }
+        if ('dir' in incoming) {
+          const dir = incoming.dir
+          if (dir !== null && dir !== undefined && (typeof dir !== 'string' || dir.trim() === '')) {
+            throw new HttpError(400, '晨间简报目录不合法')
+          }
+          next.morningBrief.dir = resolveBriefDir(dir, this.dir)
+        }
+      }
       if ('evolution' in patch) {
         const evolution = patch.evolution
         if (evolution !== null && typeof evolution !== 'object') {
@@ -1117,6 +1294,36 @@ export class TaskStore {
       }
     }
     this.state.settings = { ...this.state.settings, dailyReport: next }
+    this.bump()
+    this.save()
+    return next
+  }
+
+  /** Morning-brief runtime bookkeeping (never user-facing settings). */
+  updateMorningBrief(patch) {
+    const next = { ...(this.state.settings.morningBrief || defaultMorningBrief(this.dir)) }
+    if (patch && typeof patch === 'object') {
+      if ('lastDate' in patch) {
+        next.lastDate = typeof patch.lastDate === 'string' && REPORT_DATE_PATTERN.test(patch.lastDate)
+          ? patch.lastDate
+          : null
+      }
+      if ('lastStatus' in patch) {
+        next.lastStatus = REPORT_STATUSES.includes(patch.lastStatus) ? patch.lastStatus : 'idle'
+      }
+      if ('lastError' in patch) {
+        next.lastError = typeof patch.lastError === 'string' && patch.lastError !== '' ? patch.lastError : null
+      }
+      if ('lastGeneratedAt' in patch) {
+        next.lastGeneratedAt = Number.isFinite(patch.lastGeneratedAt) ? patch.lastGeneratedAt : null
+      }
+      if ('generatingDate' in patch) {
+        next.generatingDate = typeof patch.generatingDate === 'string' && REPORT_DATE_PATTERN.test(patch.generatingDate)
+          ? patch.generatingDate
+          : null
+      }
+    }
+    this.state.settings = { ...this.state.settings, morningBrief: next }
     this.bump()
     this.save()
     return next
@@ -1338,7 +1545,7 @@ function normalizeTask(raw) {
     createdAt: Number.isFinite(raw.createdAt) ? raw.createdAt : now,
   }
   if (Number.isFinite(raw.updatedAt)) task.updatedAt = raw.updatedAt
-  for (const key of ['startedAt', 'endedAt', 'settleAfterSeq']) {
+  for (const key of ['startedAt', 'endedAt', 'settleAfterSeq', 'resultBackfillAt']) {
     if (Number.isFinite(raw[key])) task[key] = raw[key]
   }
   for (const key of ['sessionId', 'provider', 'model', 'reasoningEffort', 'error', 'lastMessage', 'chainFrom']) {

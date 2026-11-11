@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Task Butler",
-    "description": "Your task butler for tasks, sessions, daily reports and self-evolution: keep not-yet-started thoughts in Awaiting start and drag one to Queued when it is time; new DSH workspace sessions fold in; priorities, edit/pause/resume/interrupt; scheduled fixed-format daily reports; scheduled retrospectives turn failures and your corrections into reusable lessons that are archived for review, and fold repeated workflows into DSH skills."
+    "description": "An AI task secretary for tasks, sessions and self-evolution: the Today workbench answers \"what to do today / what needs me\" first, with one-line quick capture; the queue auto-claims and runs tasks under a global concurrency limit, and priority now affects queue insertion; a morning brief is generated at 08:30 and pushed to your webhook, followed by a scheduled daily report; new DSH workspace sessions fold in; tasks can be edited, paused, resumed or stopped; scheduled retrospectives turn failures and your corrections into reusable lessons that are archived for review, and fold repeated workflows into DSH skills."
   }
 }

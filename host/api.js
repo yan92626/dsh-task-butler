@@ -8,7 +8,7 @@
 import { HttpError, PRIORITY_LABELS, normalizePriority } from './store.js'
 
 const PREFIX = '/secretary/api'
-const VERSION = '0.5.0'
+const VERSION = '0.6.0'
 const MAX_BODY_BYTES = 1_000_000
 const VALID_ACTIONS = new Set([
   'cancel',
@@ -134,10 +134,15 @@ function requireString(value, field, maxLength) {
   return text
 }
 
-export function createApi({ ctx, store, bridge, scheduler, reports, webhook, evolution }) {
+export function createApi({ ctx, store, bridge, scheduler, reports, briefs, webhook, evolution }) {
   function reportModule() {
     if (!reports) throw new HttpError(500, '日报模块不可用')
     return reports
+  }
+
+  function briefModule() {
+    if (!briefs) throw new HttpError(500, '晨间简报模块不可用')
+    return briefs
   }
 
   function evolutionModule() {
@@ -171,6 +176,9 @@ export function createApi({ ctx, store, bridge, scheduler, reports, webhook, evo
       counts: snapshot.counts,
       runningCount: snapshot.counts.running,
       reports: reportModule().meta(),
+      // v0.6: omitted only on a Host that was not assembled with the briefs
+      // engine (the browser half degrades gracefully in that case).
+      briefs: briefs && typeof briefs.meta === 'function' ? briefs.meta() : null,
       evolution: store.getEvolutionMeta(),
     }
   }
@@ -274,7 +282,8 @@ export function createApi({ ctx, store, bridge, scheduler, reports, webhook, evo
     if ('cwd' in body) patch.cwd = requireString(body.cwd, 'cwd', 4096)
     if ('group' in body) patch.group = typeof body.group === 'string' ? body.group.trim() : ''
     if ('chainFrom' in body) patch.chainFrom = resolveChainFrom(body.chainFrom, id)
-    // Priority is display/filter metadata: validate the enum, never reorder.
+    // Priority is validated here; v0.6 re-inserts a pending task by priority
+    // after the update instead of keeping its old array position.
     if ('priority' in body) patch.priority = normalizePriority(body.priority)
     store.update(id, current => {
       if (patch.title !== undefined) current.title = patch.title
@@ -290,6 +299,10 @@ export function createApi({ ctx, store, bridge, scheduler, reports, webhook, evo
       if (patch.priority !== undefined) current.priority = patch.priority
       current.updatedAt = Date.now()
     })
+    if ('priority' in body && task.status === 'pending' &&
+      typeof store.repositionPending === 'function') {
+      store.repositionPending(id)
+    }
     scheduler.kick()
     return { ok: true, rev: store.rev, task: taskPayload(id), tasks: store.tasks.map(wireTask) }
   }
@@ -326,6 +339,8 @@ export function createApi({ ctx, store, bridge, scheduler, reports, webhook, evo
         delete current.settleAfterSeq
         current.updatedAt = now
       })
+      // v0.6: a retried task re-enters the queue in priority order.
+      if (typeof store.repositionPending === 'function') store.repositionPending(task.id)
     } else if (name === 'delete') {
       if (task.status === 'running' || task.status === 'paused' || task.status === 'blocked') {
         await bridge.cancel(task.sessionId)
@@ -393,6 +408,10 @@ export function createApi({ ctx, store, bridge, scheduler, reports, webhook, evo
       (typeof body.dailyReport !== 'object' || Array.isArray(body.dailyReport))) {
       throw new HttpError(400, '日报设置格式不正确')
     }
+    if (body && body.morningBrief !== undefined && body.morningBrief !== null &&
+      (typeof body.morningBrief !== 'object' || Array.isArray(body.morningBrief))) {
+      throw new HttpError(400, '晨间简报设置格式不正确')
+    }
     if (body && body.evolution !== undefined && body.evolution !== null &&
       (typeof body.evolution !== 'object' || Array.isArray(body.evolution))) {
       throw new HttpError(400, '复盘设置格式不正确')
@@ -400,6 +419,7 @@ export function createApi({ ctx, store, bridge, scheduler, reports, webhook, evo
     const updated = store.updateSettings(body || {})
     scheduler.kick()
     if (reports) reports.kick()
+    if (briefs && typeof briefs.kick === 'function') briefs.kick()
     if (evolution && typeof evolution.kick === 'function') evolution.kick()
     return { ok: true, rev: store.rev, settings: updated }
   }
@@ -502,6 +522,30 @@ export function createApi({ ctx, store, bridge, scheduler, reports, webhook, evo
       ? String(body.date).trim()
       : undefined
     const result = reportModule().generate(date)
+    return { ok: true, date: result.date }
+  }
+
+  // --- morning briefs (v0.6) -----------------------------------------------
+
+  function listBriefs() {
+    const meta = briefModule().meta()
+    return { ok: true, briefs: meta.briefs, settings: meta.settings }
+  }
+
+  function briefContent(url) {
+    const date = requireString(url.searchParams.get('date'), 'date')
+    const module = briefModule()
+    const content = module.read(date)
+    if (content === undefined) throw new HttpError(404, '该日期没有晨间简报')
+    const path = typeof module.pathOf === 'function' ? module.pathOf(date) : ''
+    return { ok: true, date, path, content }
+  }
+
+  function generateBrief(body) {
+    const date = body && body.date !== undefined && body.date !== null && body.date !== ''
+      ? String(body.date).trim()
+      : undefined
+    const result = briefModule().generate(date)
     return { ok: true, date: result.date }
   }
 
@@ -652,6 +696,14 @@ export function createApi({ ctx, store, bridge, scheduler, reports, webhook, evo
         sendJson(res, 200, reportContent(url))
         return
       }
+      if (method === 'GET' && route === '/briefs') {
+        sendJson(res, 200, listBriefs())
+        return
+      }
+      if (method === 'GET' && route === '/briefs/content') {
+        sendJson(res, 200, briefContent(url))
+        return
+      }
       if (method === 'GET' && route === '/evolution') {
         sendJson(res, 200, evolutionState())
         return
@@ -676,6 +728,7 @@ export function createApi({ ctx, store, bridge, scheduler, reports, webhook, evo
         if (route === '/session/cancel') return sendJson(res, 200, await cancelSession(body))
         if (route === '/webhook/test') return sendJson(res, 200, await testWebhook())
         if (route === '/reports/generate') return sendJson(res, 200, generateReport(body))
+        if (route === '/briefs/generate') return sendJson(res, 200, generateBrief(body))
         if (route === '/evolution/generate') return sendJson(res, 200, generateRetrospective(body))
         if (route === '/evolution/lessons') return sendJson(res, 200, await addLesson(body))
         if (route === '/evolution/lessons/update') return sendJson(res, 200, await updateLesson(body))
@@ -716,6 +769,9 @@ export function createApi({ ctx, store, bridge, scheduler, reports, webhook, evo
       listReports,
       reportContent,
       generateReport,
+      listBriefs,
+      briefContent,
+      generateBrief,
       testWebhook,
       webhookLog,
       evolutionMeta: evolutionState,

@@ -8,14 +8,19 @@ the user's own data:
 - every task it creates is tracked and removed in a `finally` block;
 - task order and settings are snapshotted and restored;
 - optional sections that could affect the user's data are opt-in flags
-  (`--dispatch`, `--reorder`, `--reports`) and print a warning.
+  (`--dispatch`, `--reorder`, `--reports`, `--briefs`) and print a warning.
 
 Usage:
   python3 tests/api-check.py [--base URL] [--cwd DIR] [--dispatch] [--reorder] [--reports]
-                              [--evolution] [--keep]
+                              [--evolution] [--briefs] [--keep]
 
 --evolution adds v9 read-only checks for the retrospective / lessons / skills API. It
 never triggers a retrospective, so it does not spend model time or change your state.
+
+--briefs adds a v0.6 section that reads `/briefs` and, only when today's brief does not
+exist yet, POSTs `/briefs/generate` (a real model session, up to a few minutes). The
+generated file is deleted in the cleanup pass. On an older Host (0.5.x) every v0.6
+check is skipped with a notice instead of failing.
 """
 import argparse
 import json
@@ -30,6 +35,7 @@ CHECKS = 0
 CREATED_IDS = []
 ORIGINAL = {"settings": None, "order": []}
 REPORT_CREATED = None
+BRIEF_CREATED = None
 
 
 # ---------------------------------------------------------------- HTTP helpers
@@ -169,6 +175,13 @@ def restore_original(base):
                 "format": webhook.get("format") or "generic",
                 "events": webhook.get("events") or {},
             }
+        morning_brief = settings.get("morningBrief") or {}
+        if morning_brief:
+            patch["morningBrief"] = {
+                "enabled": morning_brief.get("enabled") is not False,
+                "time": morning_brief.get("time") or "08:30",
+                "dir": morning_brief.get("dir"),
+            }
         patch = {key: value for key, value in patch.items() if value is not None}
         if patch:
             request(base, "POST", "/secretary/api/settings", patch)
@@ -177,6 +190,14 @@ def restore_original(base):
     # Remove a report file this run generated, if it did not exist before.
     if REPORT_CREATED:
         path, existed = REPORT_CREATED
+        if path and not existed:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    # Remove a morning-brief file this run generated, if it did not exist before.
+    if BRIEF_CREATED:
+        path, existed = BRIEF_CREATED
         if path and not existed:
             try:
                 os.unlink(path)
@@ -197,6 +218,8 @@ def main():
                         help="also generate a daily report when today's file does not exist yet")
     parser.add_argument("--evolution", action="store_true",
                         help="also run v9 read-only retrospective/lessons/skills API checks")
+    parser.add_argument("--briefs", action="store_true",
+                        help="also generate today's morning brief when missing (calls a real model session)")
     args = parser.parse_args()
     base = args.base.rstrip("/")
 
@@ -227,6 +250,17 @@ def main():
         print("1. ping / request gates")
         status, payload = request(base, "GET", "/secretary/api/ping")
         check("ping ok", status == 200 and payload.get("ok") is True, payload)
+        # v0.6 checks are skipped (not failed) when the live Host is still 0.5.x:
+        # an older install simply lacks the new endpoints, which is not a
+        # regression of this suite.
+        version = str(payload.get("version") or "")
+        check("plugin version readable", status == 200 and bool(version), payload)
+        is_v06 = version.startswith("0.6")
+        if is_v06:
+            check("version is 0.6.0", version == "0.6.0", version)
+        else:
+            print(f"     当前 Host 版本 {version or '未知'}（旧版，未含 v0.6 端点）；"
+                  "晨间简报检查将优雅跳过，不误报失败。")
         status, payload = request(base, "POST", "/secretary/api/settings", {"concurrency": 1},
                                   origin="https://evil.example")
         check("cross-origin POST is rejected", status == 403, (status, payload))
@@ -336,6 +370,37 @@ def main():
         check("reports list readable", status == 200 and isinstance(payload.get("reports"), list), status)
         status, payload = request(base, "GET", "/secretary/api/backups")
         check("backups list readable", status == 200 and isinstance(payload.get("backups"), list), status)
+
+        print("8b. morning briefs (v0.6, read-only)")
+        if not is_v06:
+            print("     跳过：当前运行的是旧版 Host（没有 /briefs），不误报失败。")
+        else:
+            status, payload = request(base, "GET", "/secretary/api/briefs")
+            check("GET /briefs 200", status == 200 and payload.get("ok") is True, status)
+            brief_settings = payload.get("settings") or {}
+            check("briefs settings present",
+                  isinstance(brief_settings, dict)
+                  and isinstance(brief_settings.get("time"), str)
+                  and ":" in brief_settings.get("time", "")
+                  and isinstance(brief_settings.get("enabled"), bool),
+                  brief_settings)
+            check("briefs list is an array", isinstance(payload.get("briefs"), list), payload.get("briefs"))
+            status, payload = request(base, "GET", "/secretary/api/briefs/content?date=1999-01-01")
+            check("missing brief -> 404", status == 404, payload)
+            status, payload = request(base, "GET", "/secretary/api/briefs/content?date=not-a-date")
+            check("invalid brief date -> 400", status == 400, payload)
+            snapshot = state(base)
+            meta = snapshot.get("briefs")
+            check("/state carries briefs meta",
+                  isinstance(meta, dict) and isinstance(meta.get("briefs"), list)
+                  and isinstance(meta.get("settings"), dict), meta)
+            # Rejected payloads never mutate settings.
+            status, payload = request(base, "POST", "/secretary/api/settings", {"morningBrief": []})
+            check("array morningBrief payload -> 400", status == 400, payload)
+            status, payload = request(base, "POST", "/secretary/api/settings", {"morningBrief": {"time": "9:00"}})
+            check("invalid morningBrief time -> 400", status == 400, payload)
+            status, payload = request(base, "POST", "/secretary/api/settings", {"morningBrief": {"dir": 42}})
+            check("invalid morningBrief dir -> 400", status == 400, payload)
 
         print("9. settings validation (restored afterwards)")
         original_settings = ORIGINAL["settings"]
@@ -501,6 +566,57 @@ def main():
                       report_text[:160])
                 report_dir = (state(base).get("settings", {}).get("dailyReport") or {}).get("dir") or ""
                 REPORT_CREATED = (os.path.join(report_dir, f"{today}.md"), False)
+
+        if args.briefs:
+            print("13. morning brief generation (opt-in, calls a real model session)")
+            if not is_v06:
+                print("     跳过：当前运行的是旧版 Host（没有 /briefs），不误报失败。")
+            else:
+                global BRIEF_CREATED
+                today = time.strftime("%Y-%m-%d")
+                listing = request(base, "GET", "/secretary/api/briefs")[1].get("briefs", [])
+                existing = any(entry.get("date") == today for entry in listing)
+                if existing:
+                    print("     今天已有晨报，跳过生成（不会覆盖你的文件）")
+                else:
+                    status, payload = request(base, "POST", "/secretary/api/briefs/generate", {})
+                    check("brief generation accepted", status == 200 and payload.get("ok") is True, payload)
+                    deadline = time.time() + 300
+                    content = None
+                    content_status = None
+                    while time.time() < deadline:
+                        time.sleep(5)
+                        listing = request(base, "GET", "/secretary/api/briefs")[1].get("briefs", [])
+                        if any(entry.get("date") == today for entry in listing):
+                            content_status, content = request(
+                                base, "GET", f"/secretary/api/briefs/content?date={today}")
+                            if content_status == 200:
+                                break
+                    brief_text = (content or {}).get("content", "")
+                    check("brief readable + fixed format",
+                          content_status == 200 and content
+                          and brief_text.startswith("#")
+                          and all(heading in brief_text for heading in (
+                              "昨日回顾", "今日焦点", "等你处理", "风险与提醒")),
+                          brief_text[:140])
+                    check("brief omits technical details",
+                          brief_text != "" and "token" not in brief_text.lower()
+                          and "Tokens" not in brief_text, brief_text[:160])
+                    # Wait for the runtime bookkeeping to settle, then record the
+                    # created file so the cleanup pass removes it.
+                    settle_deadline = time.time() + 30
+                    brief_state = {}
+                    while time.time() < settle_deadline:
+                        brief_state = (state(base).get("briefs") or {}).get("settings") or {}
+                        if brief_state.get("lastStatus") in ("ok", "failed"):
+                            break
+                        time.sleep(2)
+                    check("brief generation recorded",
+                          brief_state.get("lastStatus") == "ok"
+                          and brief_state.get("lastDate") == today, brief_state)
+                    brief_dir = brief_state.get("dir") or ""
+                    if brief_dir:
+                        BRIEF_CREATED = (os.path.join(brief_dir, f"{today}.md"), False)
 
         if args.evolution:
             print("9. self-evolution API (v9, read-only)")

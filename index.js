@@ -2,8 +2,8 @@
  * dsh-personal-secretary — Host half.
  *
  * Owns the durable board, the scheduler that claims tasks into real Sessions,
- * the import of ordinary DSH workspace sessions, the daily report timer, and
- * the v9 retrospective engine (lessons + distilled skills).
+ * the import of ordinary DSH workspace sessions, the daily report timer, the
+ * v0.6 morning-brief timer, and the v9 retrospective engine (lessons + skills).
  * The browser half only reads state and asks for mutations over the same-origin
  * HTTP API, so the secretary keeps working while the page is closed.
  */
@@ -11,6 +11,7 @@ import { TaskStore } from './host/store.js'
 import { createSessionBridge } from './host/session.js'
 import { createScheduler } from './host/scheduler.js'
 import { createReports } from './host/reports.js'
+import { createBriefs } from './host/briefs.js'
 import { createApi, registerApi } from './host/api.js'
 import { registerTool } from './host/tool.js'
 import { createWebhook } from './host/webhook.js'
@@ -30,6 +31,8 @@ export function apply(ctx) {
   const evolution = createEvolution({ ctx, store, bridge, notify: webhook.notify })
   const scheduler = createScheduler({ ctx, store, bridge, notify: webhook.notify })
   const reports = createReports({ ctx, store, bridge, notify: webhook.notify })
+  // v0.6 morning brief: same generation pipeline as the daily report, own timer.
+  const briefs = createBriefs({ ctx, store, bridge, notify: webhook.notify })
 
   // First use inherits the deployment's default model, so "auto run" works
   // without visiting the settings row first.
@@ -51,7 +54,7 @@ export function apply(ctx) {
     ctx.logger?.warn?.('[personal-secretary] 读取默认模型失败', error)
   }
 
-  const api = createApi({ ctx, store, bridge, scheduler, reports, webhook, evolution })
+  const api = createApi({ ctx, store, bridge, scheduler, reports, briefs, webhook, evolution })
   ctx.effect(
     () => registerApi(ctx, api),
     'personal-secretary: http api',
@@ -84,6 +87,11 @@ export function apply(ctx) {
     reports.start()
     return () => reports.stop()
   }, 'personal-secretary: daily reports')
+
+  ctx.effect(() => {
+    briefs.start()
+    return () => briefs.stop()
+  }, 'personal-secretary: morning brief')
 
   ctx.effect(() => {
     evolution.start()

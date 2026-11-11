@@ -64,9 +64,9 @@ export function registerTool(ctx, { store, scheduler, bridge, reports, operation
   if (!tools || typeof tools.register !== 'function') return () => {}
 
   const description = [
-    '管理「任务管家」：把工作发布成任务，由 Harness 在后台按全局并发自动领取执行。每个任务是一个独立会话，可指定工作目录、默认模型与“承接上一任务结果”的串联关系；也可以查询、取消、重试、置顶、暂停、继续、打断或删除任务，立即生成某天的日报，或执行复盘与自我进化（经验规则与技能沉淀）。',
+    '管理「任务管家」：把工作发布成任务，由 Harness 在后台按全局并发自动领取执行。每个任务是一个独立会话，可指定工作目录、默认模型与“承接上一任务结果”的串联关系；也可以查询、取消、重试、置顶、暂停、继续、打断或删除任务，立即生成某天的日报或晨间简报，或执行复盘与自我进化（经验规则与技能沉淀）。',
     '适用：多个彼此独立或按顺序串行的工作、需要排队/限流/无人值守执行、或希望稍后统一查看结果。单次交互式工作直接用当前会话即可，不要为了用秘书而用秘书。',
-    '新任务默认放进「待开始」（status=idea，暂不执行）；需要真正开展时用 promote 移入排队中，或发布时直接指定 status=pending。priority 只影响展示与筛选，不影响领取顺序。发布后不要在本会话里重复执行同一件事。',
+    '新任务默认放进「待开始」（status=idea，暂不执行）；需要真正开展时用 promote 移入排队中，或发布时直接指定 status=pending。优先级参与入队排序（紧急→高→普通→低）；拖拽与「下一个执行」是更高优先的手动覆盖。发布后不要在本会话里重复执行同一件事。',
   ].join(' ')
 
   const definition = {
@@ -96,7 +96,7 @@ export function registerTool(ctx, { store, scheduler, bridge, reports, operation
             'retrospective',
             'evolution',
           ],
-          description: '要执行的操作。publish=发布任务；list=查看任务；get=查看某任务详情与对话；cancel/retry/delete/run_next/run/pause/resume/interrupt=任务控制；promote=待开始 → 排队中；demote=排队中 → 待开始；set_settings=调整并发、默认模型与日报设置；daily_report=立即生成日报；retrospective=立即生成一次复盘（覆盖上次复盘以来的任务），复盘会沉淀经验规则与技能候选；evolution=查看复盘设置、经验规则与技能。',
+          description: '要执行的操作。publish=发布任务；list=查看任务；get=查看某任务详情与对话；cancel/retry/delete/run_next/run/pause/resume/interrupt=任务控制；promote=待开始 → 排队中；demote=排队中 → 待开始；set_settings=调整并发、默认模型、日报与晨报设置；daily_report=立即生成日报；retrospective=立即生成一次复盘（覆盖上次复盘以来的任务），复盘会沉淀经验规则与技能候选；evolution=查看复盘设置、经验规则与技能。',
         },
         title: { type: 'string', description: 'publish 必填：任务标题（简短，可作为卡片标题）。' },
         prompt: { type: 'string', description: 'publish 必填：任务正文，写清目标、约束与验收标准。' },
@@ -110,7 +110,7 @@ export function registerTool(ctx, { store, scheduler, bridge, reports, operation
         priority: {
           type: 'string',
           enum: ['urgent', 'high', 'normal', 'low'],
-          description: 'publish 可选：优先级（紧急/高/普通/低），仅用于展示与筛选，不影响领取顺序与串联；默认 normal。',
+          description: 'publish 可选：优先级（紧急/高/普通/低），参与入队排序（紧急→高→普通→低）；默认 normal。',
         },
         id: { type: 'string', description: 'get/cancel/retry/delete/run_next/run/pause/resume/interrupt 必填：任务 id（也接受该任务的会话 id）。' },
         limit: { type: 'integer', description: 'list 可选：最多返回多少个任务，默认 20，最大 100。' },
@@ -121,6 +121,8 @@ export function registerTool(ctx, { store, scheduler, bridge, reports, operation
         reasoning_effort: { type: 'string', description: 'set_settings 可选：默认思考强度 id。' },
         notify_on_done: { type: 'boolean', description: 'set_settings 可选：任务跑完时是否发送完成通知。' },
         daily_report_time: { type: 'string', description: 'set_settings 可选：自动生成日报的本地时间 HH:mm。' },
+        morning_brief_time: { type: 'string', description: 'set_settings 可选：晨间简报生成时间（本地时间 HH:mm）。' },
+        morning_brief_enabled: { type: 'boolean', description: 'set_settings 可选：是否启用晨间简报。' },
         date: { type: 'string', description: 'daily_report / retrospective 可选：要生成或复盘的日期 YYYY-MM-DD，默认今天。' },
       },
       required: ['action'],
@@ -267,6 +269,12 @@ export function registerTool(ctx, { store, scheduler, bridge, reports, operation
     if (args && typeof args.notify_on_done === 'boolean') patch.notifyOnDone = args.notify_on_done
     if (args && typeof args.daily_report_time === 'string') {
       patch.dailyReport = { time: args.daily_report_time }
+    }
+    if (args && typeof args.morning_brief_time === 'string') {
+      patch.morningBrief = { ...(patch.morningBrief || {}), time: args.morning_brief_time }
+    }
+    if (args && typeof args.morning_brief_enabled === 'boolean') {
+      patch.morningBrief = { ...(patch.morningBrief || {}), enabled: args.morning_brief_enabled }
     }
     if (Object.keys(patch).length === 0) throw new Error('set_settings 没有可更新的字段')
     const result = await operations.settings(patch)

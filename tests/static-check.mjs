@@ -59,7 +59,7 @@ check('icon is under 256 KiB', iconBytes <= 256 * 1024, String(iconBytes))
 check('icon declares viewBox', /viewBox="[^"]+"/.test(icon))
 
 console.log('4. host half')
-const hostFiles = ['index.js', 'host/store.js', 'host/session.js', 'host/scheduler.js', 'host/api.js', 'host/evolution.js', 'host/tool.js', 'host/webhook.js']
+const hostFiles = ['index.js', 'host/store.js', 'host/session.js', 'host/scheduler.js', 'host/api.js', 'host/evolution.js', 'host/tool.js', 'host/webhook.js', 'host/briefs.js']
 for (const file of hostFiles) {
   const source = read(file)
   check(`${file} parses as ESM (no require)`, !/\brequire\s*\(/.test(source))
@@ -126,7 +126,7 @@ check('supports pause/resume/interrupt actions', client.includes("'pause'") && c
 check('has daily report UI', client.includes('/reports') && client.includes('日报'))
 check('has webhook notification UI', /webhook/i.test(client) && client.includes('测试通知'))
 check('uses the webhook test endpoint', client.includes('/webhook/test'))
-check('has the idea status column', client.includes("'idea'") && (client.includes('待开始') || client.includes('排队中')))
+check('has the idea status column', client.includes("'idea'") && client.includes('想法'))
 check('supports priority enums', ['urgent', 'high', 'normal', 'low'].every(level => client.includes(`'${level}'`)))
 check('supports promote/demote actions', client.includes("'promote'") && client.includes("'demote'"))
 check('settings is a dialog', client.includes('SettingsDialog') || client.includes('settings-dialog'))
@@ -171,13 +171,14 @@ for (const route of ["'/evolution'", "'/evolution/content'", "'/evolution/skills
   "'/evolution/lessons/delete'", "'/evolution/skills/action'"]) {
   check(`api route ${route}`, apiSource.includes(route))
 }
-check('api version is 0.5.0', /VERSION = '0\.5\.0'/.test(apiSource))
+check('api version is 0.6.0', /VERSION = '0\.6\.0'/.test(apiSource))
 check('state carries the evolution meta', apiSource.includes('getEvolutionMeta()'))
+check('state carries the briefs meta', /briefs\s*:\s*[^\n]{0,80}meta\s*\(\s*\)/.test(apiSource))
 const toolSource = read('host/tool.js')
 check('agent tool supports retrospective and evolution', toolSource.includes("'retrospective'") &&
   toolSource.includes("'evolution'"))
 check('webhook has a retrospective template', read('host/webhook.js').includes('retrospectiveMarkdown'))
-check('package version is 0.5.0', pkg.version === '0.5.0', pkg.version)
+check('package version is 0.6.0', pkg.version === '0.6.0', pkg.version)
 check('client has the retrospective entry', client.includes('evolutionButton') && client.includes('/evolution'))
 check('client has the self-evolution settings section', client.includes('evolutionSection') &&
   client.includes('skillMode'))
@@ -188,6 +189,76 @@ check('client calls every evolution endpoint',
     '/evolution/skills/action', '/evolution/content', '/evolution/skills/content'].every(route => client.includes(route)))
 check('client covers all three drawer tabs', client.includes('tabRetro') && client.includes('tabLessons') &&
   client.includes('tabSkills'))
+
+console.log('7. v0.6 morning brief + today workbench')
+const briefsSource = read('host/briefs.js')
+check('briefs host module is ESM (no require)', !/\brequire\s*\(/.test(briefsSource))
+const briefsExports = [
+  'isBriefDue', 'buildMorningBriefPrompt', 'buildMorningBriefFallback', 'collectMorningBriefData',
+  'extractBriefBody', 'normalizeMorningBriefText', 'listBriefFiles', 'readBriefFile', 'createBriefs',
+]
+for (const name of briefsExports) {
+  check(`briefs exports ${name}`, new RegExp(`export (async )?function ${name}\\b`).test(briefsSource))
+}
+check('briefs exposes the engine constants', /BRIEF_TICK_MS = 30_000/.test(briefsSource) &&
+  /BRIEF_POLL_MS = 1_000/.test(briefsSource) &&
+  /BRIEF_MAX_WAIT_MS = 10 \* 60 \* 1000/.test(briefsSource) &&
+  /BRIEF_DATE_PATTERN/.test(briefsSource))
+check('briefs uses the fixed four sections', ['昨日回顾', '今日焦点', '等你处理', '风险与提醒']
+  .every(heading => briefsSource.includes(heading)))
+
+check('store exports pendingInsertIndex', /export function pendingInsertIndex\b/.test(storeSource))
+check('store has repositionPending', /repositionPending\s*\(/.test(storeSource))
+check('store has defaultMorningBrief', /export function defaultMorningBrief\b/.test(storeSource))
+check('store has updateMorningBrief', /updateMorningBrief\s*\(/.test(storeSource))
+check('store webhook events include morningBrief', storeSource.includes("'morningBrief'"))
+check('scheduler exports pendingInClaimOrder', /export function pendingInClaimOrder\b/.test(schedulerSource))
+check('scheduler backfills session results', /backfillSessionResult|selectSessionResultBackfill|resultBackfillAt/.test(schedulerSource))
+check('tool describes priority as queue ordering', toolSource.includes('优先级参与入队排序') &&
+  !toolSource.includes('优先级只影响展示与筛选'))
+check('index wires the briefs engine', indexSource.includes('createBriefs') &&
+  /briefs\.start\s*\(/.test(indexSource) && /briefs\.stop\s*\(/.test(indexSource))
+check('api kicks the briefs engine after settings updates', /if\s*\(\s*briefs\b[^\n]*\)\s*briefs\.kick\s*\(/.test(apiSource))
+check('api exposes brief operations', apiSource.includes('listBriefs') &&
+  apiSource.includes('briefContent') && apiSource.includes('generateBrief'))
+for (const route of ["'/briefs'", "'/briefs/content'", "'/briefs/generate'"]) {
+  check(`api route ${route}`, apiSource.includes(route))
+}
+check('webhook has a morning brief template', read('host/webhook.js').includes('morningBriefMarkdown'))
+
+check('client uses the briefs endpoints', client.includes('/briefs') && client.includes('/briefs/generate') &&
+  client.includes('/webhook/log'))
+for (const text of ['今日焦点', '待你处理', '晨间简报', '交代一件事', '通知记录']) {
+  check(`client has the v0.6 copy ${text}`, client.includes(text))
+}
+for (const text of ['下一个执行', '停止本轮', '自动执行']) {
+  check(`client renames the action copy ${text}`, client.includes(text))
+}
+for (const text of ['想法', '队列', '进行中', '已结束']) {
+  check(`client has the v0.6 column copy ${text}`, client.includes(text))
+}
+check('client has the today view shell', client.includes("'today'") && client.includes('查看晨报'))
+check('client degrades when the Host has no briefs', client.includes('当前 Host 版本不支持晨间简报'))
+
+// The browser half keeps its zh/en dictionaries inline: every key must exist in
+// both languages (§4.6) and the v0.6 copy must be present in English too.
+function dictionaryKeys(source, startMarker) {
+  const start = source.indexOf(startMarker)
+  if (start < 0) return []
+  const end = source.indexOf('\n    }', start)
+  const block = source.slice(start, end >= 0 ? end : source.length)
+  return [...block.matchAll(/\n\s{6}([A-Za-z0-9_]+):/g)].map(match => match[1])
+}
+const zhKeys = dictionaryKeys(client, 'const zh = {')
+const enKeys = dictionaryKeys(client, 'const en = {')
+check('client zh/en dictionaries are key-paired',
+  zhKeys.length > 300 && zhKeys.length === enKeys.length && zhKeys.every(key => enKeys.includes(key)),
+  `zh=${zhKeys.length} en=${enKeys.length}`)
+check('v0.6 copy is translated to English',
+  ['Morning brief', 'Needs you', 'View brief', 'Generate now', 'No brief yet today',
+    'Delivery log', 'Run next', 'Stop this run', 'Auto-run', 'Add to queue'].every(text => client.includes(text)))
+check('old naming is fully replaced in the client',
+  !['待开始', '发布任务', '置顶', '打断', '自动领取', '已归档'].some(text => client.includes(text)))
 
 console.log()
 if (failures.length) {

@@ -6,12 +6,18 @@
  * The session log is the only source of truth for "did it finish" and "is it
  * blocked": the board never guesses from wall-clock time, and a turn that
  * ended before the task started is ignored.
+ *
+ * v0.6 also backfills imported DSH session tasks: when one of them finishes
+ * (running -> done) or an old done row has no `result` yet, the committed log
+ * is summarised onto the task, bounded to a few rows per tick so it can never
+ * delay claim/dispatch.
  */
 import { basename } from 'node:path'
 
 const TICK_MS = 1500
 const STALE_SESSION_MS = 90_000
 const IMPORT_LIMIT = 100
+const BACKFILL_LIMIT = 5
 const FIRST_SYNC_WINDOW_MS = 24 * 60 * 60 * 1000
 const RESUME_PROMPT = '继续完成该任务（上次被暂停）。'
 
@@ -74,6 +80,34 @@ function importTitle(item, firstMessage) {
   return `${dir} · ${item.sessionId.slice(-6)}`
 }
 
+/** Pending tasks in the exact order the scheduler will claim them. */
+export function pendingInClaimOrder(tasks) {
+  return (Array.isArray(tasks) ? tasks : []).filter(task => task && task.status === 'pending')
+}
+
+/**
+ * Done, imported DSH-session tasks that never received their result summary,
+ * newest finished first, capped at `limit`.
+ *
+ * A task that already carries a `resultBackfillAt` attempt marker is excluded
+ * on purpose: a deleted or unreadable session can never be retried forever.
+ */
+export function selectSessionResultBackfill(tasks, limit = BACKFILL_LIMIT) {
+  const max = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : BACKFILL_LIMIT
+  if (max === 0) return []
+  const candidates = []
+  for (const task of Array.isArray(tasks) ? tasks : []) {
+    if (!task || task.source !== 'session') continue
+    if (task.status !== 'done' || !task.sessionId || task.result) continue
+    if (Number.isFinite(task.resultBackfillAt)) continue
+    candidates.push(task)
+  }
+  candidates.sort((left, right) =>
+    (right.endedAt || right.updatedAt || right.createdAt || 0) -
+    (left.endedAt || left.updatedAt || left.createdAt || 0))
+  return candidates.slice(0, max)
+}
+
 export function createScheduler({ ctx, store, bridge, notify, options = {} }) {
   const tickMs = Number.isFinite(options.tickMs) ? options.tickMs : TICK_MS
   const push = typeof notify === 'function' ? notify : () => {}
@@ -82,6 +116,10 @@ export function createScheduler({ ctx, store, bridge, notify, options = {} }) {
   let ticking = false
   let disposed = false
   const settling = new Set()
+  // v0.6 session-result backfill: one serial promise chain, at most a few
+  // inspections per tick, never awaited by the scheduler pass itself.
+  const backfillQueued = new Set()
+  let backfillChain = Promise.resolve()
 
   function log(...args) {
     try {
@@ -117,6 +155,7 @@ export function createScheduler({ ctx, store, bridge, notify, options = {} }) {
     ticking = true
     try {
       await syncExternalSessions()
+      scheduleBoundedSessionBackfill()
       await scanRunning()
       await reconcileEndedSessions()
       await claimPending()
@@ -166,6 +205,9 @@ export function createScheduler({ ctx, store, bridge, notify, options = {} }) {
           current.endedAt = now
           current.updatedAt = item.updatedAt || now
         })
+        // v0.6: write the finished DSH session's result back asynchronously;
+        // it must never block the sync or the claim pass.
+        scheduleSessionBackfill(task.id, true)
       } else if (item.updatedAt && item.updatedAt !== task.updatedAt) {
         store.update(task.id, current => {
           current.updatedAt = item.updatedAt
@@ -274,7 +316,7 @@ export function createScheduler({ ctx, store, bridge, notify, options = {} }) {
     const limit = Math.max(1, Math.min(10, Number(settings.concurrency) || 1))
     let running = queueRunningCount()
     if (running >= limit) return
-    const pending = store.tasks.filter(task => task.status === 'pending')
+    const pending = pendingInClaimOrder(store.tasks)
     for (const task of pending) {
       if (disposed || running >= limit) return
       const current = store.find(task.id)
@@ -524,6 +566,79 @@ export function createScheduler({ ctx, store, bridge, notify, options = {} }) {
     if (finalTask) push(finalTask.status === 'done' ? 'succeeded' : 'failed', finalTask)
   }
 
+  /**
+   * Serialize session-result backfills behind one promise chain so a few log
+   * inspections run at most and they never block the scheduler tick.
+   */
+  function scheduleSessionBackfill(taskId, force = false) {
+    if (disposed || !taskId || backfillQueued.has(taskId)) return
+    backfillQueued.add(taskId)
+    backfillChain = backfillChain
+      .then(() => backfillSessionResult(taskId, force))
+      .catch(() => {})
+      .then(() => { backfillQueued.delete(taskId) })
+  }
+
+  /** Bounded per-tick sweep for legacy done session rows that lack a result. */
+  function scheduleBoundedSessionBackfill() {
+    if (disposed) return
+    const selected = selectSessionResultBackfill(store.tasks, BACKFILL_LIMIT)
+    for (const task of selected) scheduleSessionBackfill(task.id)
+  }
+
+  /**
+   * Summarise one finished imported DSH-session task onto its row.
+   *
+   * `result.durationMs` is deliberately omitted: a session task's
+   * startedAt/endedAt are only the mirror-observation timestamps, so a duration
+   * would be fabricated (the contract allows it to stay undefined).
+   */
+  async function backfillSessionResult(taskId, force = false) {
+    if (disposed) return
+    const task = store.find(taskId)
+    if (!task || task.source !== 'session' || !task.sessionId || task.status !== 'done') return
+    if (!force && (task.result || Number.isFinite(task.resultBackfillAt))) return
+    let scan
+    try {
+      scan = await bridge.scan(task.sessionId)
+    } catch {
+      scan = undefined
+    }
+    if (!scan) {
+      markBackfillAttempt(taskId)
+      return
+    }
+    let summary
+    try {
+      summary = await bridge.summarize(task.sessionId)
+    } catch (error) {
+      log('session result backfill failed:', errorMessage(error))
+      markBackfillAttempt(taskId)
+      return
+    }
+    const current = store.find(taskId)
+    if (!current || current.source !== 'session' || current.status !== 'done') return
+    store.update(taskId, settled => {
+      const result = {
+        finalAnswer: summary && typeof summary.finalAnswer === 'string' ? summary.finalAnswer : '',
+        turns: summary && Number.isFinite(summary.turns) ? summary.turns : 0,
+      }
+      if (summary && summary.usage) result.usage = summary.usage
+      settled.result = result
+      settled.resultBackfillAt = Date.now()
+      if (result.finalAnswer) settled.lastMessage = bridge.snippet(result.finalAnswer)
+    })
+  }
+
+  /** Remember a failed attempt so the same row is not retried on every tick. */
+  function markBackfillAttempt(taskId) {
+    const current = store.find(taskId)
+    if (!current || current.source !== 'session' || current.status !== 'done') return
+    store.update(taskId, task => {
+      task.resultBackfillAt = Date.now()
+    })
+  }
+
   /** Called from the session/event feed; settles the matching running task. */
   const REVIVABLE_STATUSES = new Set(['done', 'failed', 'cancelled', 'paused', 'pending'])
   const RECONCILE_INTERVAL_MS = 15_000
@@ -657,10 +772,11 @@ export function createScheduler({ ctx, store, bridge, notify, options = {} }) {
     syncExternalSessions,
     scanRunning,
     claimPending,
+    backfillSessionResult,
     forget,
     RESUME_PROMPT,
   }
 }
 
-export { TICK_MS, STALE_SESSION_MS, IMPORT_LIMIT, FIRST_SYNC_WINDOW_MS, RESUME_PROMPT }
+export { TICK_MS, STALE_SESSION_MS, IMPORT_LIMIT, BACKFILL_LIMIT, FIRST_SYNC_WINDOW_MS, RESUME_PROMPT }
 export { errorMessage }

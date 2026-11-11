@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import * as evo from '../host/evolution.js'
-import { HttpError, TaskStore, defaultEvolution } from '../host/store.js'
+import { HttpError, TaskStore, WEBHOOK_EVENTS, defaultEvolution } from '../host/store.js'
 import { retrospectiveMarkdown } from '../host/webhook.js'
 
 const ROOT = '/repo'
@@ -498,9 +498,35 @@ test('TaskStore: v8 state without evolution data loads with defaults', () => {
     assert.equal(store.settings.evolution.enabled, true)
     assert.equal(store.settings.evolution.time, '22:00')
     assert.equal(store.settings.webhook.events.retrospective, true)
+    // v0.6 additive settings: an old document also gets the morning brief.
+    assert.equal(store.settings.webhook.events.morningBrief, true)
+    assert.equal(store.settings.morningBrief.enabled, true)
+    assert.equal(store.settings.morningBrief.time, '08:30')
     assert.deepEqual(store.evolution.lessons, [])
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('TaskStore: v0.6 morningBrief is additive and webhook events grow to seven', () => {
+  const first = tempStore()
+  try {
+    assert.deepEqual(WEBHOOK_EVENTS,
+      ['claimed', 'succeeded', 'blocked', 'failed', 'dailyReport', 'morningBrief', 'retrospective'])
+    assert.equal(first.store.settings.morningBrief.enabled, true)
+    assert.equal(first.store.settings.morningBrief.time, '08:30')
+    assert.equal(first.store.state.version, 4)
+    // Runtime bookkeeping has its own setter and survives a reload.
+    first.store.updateMorningBrief({ lastDate: '2026-11-11', lastStatus: 'ok', lastGeneratedAt: 42, generatingDate: null })
+    assert.throws(() => first.store.updateSettings({ morningBrief: { time: '8:30' } }),
+      error => error instanceof HttpError && error.status === 400)
+    const reloaded = new TaskStore({ dir: first.dir })
+    assert.equal(reloaded.settings.webhook.events.morningBrief, true)
+    assert.equal(reloaded.settings.morningBrief.lastStatus, 'ok')
+    assert.equal(reloaded.settings.morningBrief.lastDate, '2026-11-11')
+    assert.equal(reloaded.settings.morningBrief.lastGeneratedAt, 42)
+  } finally {
+    first.cleanup()
   }
 })
 

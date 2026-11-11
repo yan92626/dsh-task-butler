@@ -2,7 +2,8 @@
  * Webhook notifications.
  *
  * The secretary can push a Markdown message to a configurable webhook when a
- * task is claimed, finishes, blocks, fails, or when a daily report is written.
+ * task is claimed, finishes, blocks, fails, when a daily report is written, or
+ * when the v0.6 morning brief is generated.
  * Delivery is best-effort and asynchronous: it never blocks the scheduler and
  * a broken endpoint only records a last-delivery failure.
  */
@@ -129,10 +130,33 @@ export function testMarkdown() {
   return [
     '## 🔔 任务管家 · Webhook 测试',
     '',
-    '收到这条消息说明 Webhook 配置成功，之后的「任务领取 / 执行成功 / 阻塞 / 失败 / 日报 / 复盘」都会以这种 Markdown 形式推送。',
+    '收到这条消息说明 Webhook 配置成功，之后的「任务领取 / 执行成功 / 阻塞 / 失败 / 晨报 / 日报 / 复盘」都会以这种 Markdown 形式推送。',
     '',
     `- 发送时间：${formatTime(Date.now())}`,
   ].join('\n')
+}
+
+const MORNING_BRIEF_EXCERPT = 600
+
+/**
+ * v0.6 morning brief notification: the fixed title, the brief excerpt (the
+ * first paragraphs, capped) and the file path. Platform flattening applies to
+ * this Markdown automatically through `renderMarkdown`.
+ */
+export function morningBriefMarkdown(payload) {
+  const date = payload && payload.date ? String(payload.date) : ''
+  const content = payload && typeof payload.content === 'string' ? payload.content.trim() : ''
+  const path = payload && payload.path ? String(payload.path) : ''
+  const excerpt = content.length > MORNING_BRIEF_EXCERPT
+    ? `${content.slice(0, MORNING_BRIEF_EXCERPT)}…`
+    : content
+  return [
+    `## 🌅 晨间简报 · ${date}`,
+    '',
+    excerpt || (date ? `_（${date} 晨间简报内容为空）_` : '_（晨间简报内容为空）_'),
+    '',
+    ...(path ? [`> 文件：${path}`] : []),
+  ].filter(line => line !== '').join('\n')
 }
 
 /**
@@ -165,6 +189,7 @@ export function renderMarkdown(event, payload) {
   else if (event === 'failed') markdown = failedMarkdown(payload)
   else if (event === 'blocked') markdown = blockedMarkdown(payload)
   else if (event === 'dailyReport') markdown = dailyReportMarkdown(payload)
+  else if (event === 'morningBrief') markdown = morningBriefMarkdown(payload)
   else if (event === 'retrospective') markdown = retrospectiveMarkdown(payload)
   else markdown = testMarkdown()
   // A stable footer also carries the default keyword, so Feishu/DingTalk bots
